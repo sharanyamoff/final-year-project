@@ -1,0 +1,6 @@
+{
+  "name": "Explainable RL Intrusion Detection & Autonomous Response System",
+  "description": "Real-time network security system featuring packet capture, feature extraction, Random Forest classification, LSTM temporal behavioral analysis, SHAP explainability, and Deep Q-Network (DQN) autonomous response.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
