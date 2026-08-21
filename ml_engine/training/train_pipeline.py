@@ -1,18 +1,22 @@
 import os
 import sys
 import time
-import argparse
 import random
+import warnings
 from collections import Counter
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.metrics import (
+    classification_report,
+    accuracy_score,
+    confusion_matrix
+)
 
 import torch
 import torch.nn as nn
@@ -20,21 +24,30 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 
 
+warnings.filterwarnings("ignore")
+
+
 # ============================================================
 # PATHS
 # ============================================================
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-ML_ENGINE_DIR = os.path.dirname(CURRENT_DIR)
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
 
-sys.path.append(ML_ENGINE_DIR)
+sys.path.append(BASE_DIR)
 
 from models.feature_schema import FEATURE_SCHEMA, LABELS
 from models.lstm_model import TemporalLSTM
 from models.dqn_model import DQN
 
 
-ARTIFACT_DIR = os.path.join(ML_ENGINE_DIR, "artifacts")
+ARTIFACT_DIR = os.path.join(
+    BASE_DIR,
+    "artifacts"
+)
 
 
 # ============================================================
@@ -47,175 +60,46 @@ random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+LSTM_TIMESTEPS = 5
+LSTM_HIDDEN_DIM = 64
+LSTM_NUM_LAYERS = 2
+
+LSTM_EPOCHS = 5
+LSTM_BATCH_SIZE = 256
+LSTM_LEARNING_RATE = 0.001
+
+
+DQN_INPUT_DIM = 7
+DQN_HIDDEN_DIM = 32
+DQN_ACTIONS = 3
+
+DQN_EPOCHS = 10
+DQN_BATCH_SIZE = 256
+DQN_LEARNING_RATE = 0.001
+
 
 # ============================================================
 # ARTIFACT DIRECTORY
 # ============================================================
 
 def create_artifact_dir():
-    os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
-
-# ============================================================
-# DATA LOADING
-# ============================================================
-
-def load_and_clean_data(dataset_path):
-
-    print("\n============================================================")
-    print("LOADING CIC-IDS2017 DATASET")
-    print("============================================================")
-    print(f"Dataset path: {dataset_path}")
-
-    if not os.path.isdir(dataset_path):
-        raise FileNotFoundError(
-            f"Dataset directory does not exist:\n{dataset_path}"
-        )
-
-    files = sorted([
-        f for f in os.listdir(dataset_path)
-        if f.lower().endswith(".csv")
-    ])
-
-    if not files:
-        raise FileNotFoundError(
-            f"No CSV files found in:\n{dataset_path}"
-        )
-
-    dfs = []
-    groups = []
-
-    for filename in files:
-
-        filepath = os.path.join(dataset_path, filename)
-
-        print(f"\nReading: {filename}")
-
-        try:
-            df = pd.read_csv(
-                filepath,
-                encoding="cp1252",
-                low_memory=False
-            )
-        except Exception:
-            # fallback
-            df = pd.read_csv(
-                filepath,
-                encoding="latin1",
-                low_memory=False
-            )
-
-        # Clean column names
-        df.columns = (
-            df.columns
-            .astype(str)
-            .str.strip()
-        )
-
-        print(f"Rows: {len(df)}")
-        print(f"Columns: {len(df.columns)}")
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # These CIC-IDS2017 CSV files do NOT contain Source IP.
-        #
-        # Therefore:
-        # - We DO NOT use Source IP for training.
-        # - We use filename as the GroupKFold group.
-        #
-        # Source IP will still come from Scapy during LIVE LAN
-        # packet capture.
-        # ----------------------------------------------------
-
-        required_columns = [
-            "Flow Duration",
-            "Flow Packets/s",
-            "Flow Bytes/s",
-            "Packet Length Mean",
-            "Packet Length Std",
-            "SYN Flag Count",
-            "ACK Flag Count",
-            "RST Flag Count",
-            "FIN Flag Count",
-            "Timestamp",
-            "Label"
-        ]
-
-        missing = [
-            col for col in required_columns
-            if col not in df.columns
-        ]
-
-        if missing:
-            print("\nWARNING: Missing columns:")
-            for col in missing:
-                print(f"  - {col}")
-
-            print("\nSkipping this file.")
-            continue
-
-        dfs.append(df)
-
-        # Group identifier = original CSV file
-        groups.extend([filename] * len(df))
-
-    if not dfs:
-        raise ValueError(
-            "No usable CIC-IDS2017 CSV files were found."
-        )
-
-    print("\nCombining datasets...")
-
-    df = pd.concat(
-        dfs,
-        ignore_index=True
+    os.makedirs(
+        ARTIFACT_DIR,
+        exist_ok=True
     )
 
-    groups = np.array(groups)
-
-    print(f"Total rows before cleaning: {len(df)}")
-
-    # Replace infinity
-    df = df.replace(
-        [np.inf, -np.inf],
-        np.nan
+    print(
+        f"Artifact directory: {ARTIFACT_DIR}"
     )
-
-    # Drop rows containing missing values
-    before = len(df)
-
-    df = df.dropna(
-        subset=[
-            "Flow Duration",
-            "Flow Packets/s",
-            "Flow Bytes/s",
-            "Packet Length Mean",
-            "Packet Length Std",
-            "SYN Flag Count",
-            "ACK Flag Count",
-            "RST Flag Count",
-            "FIN Flag Count",
-            "Timestamp",
-            "Label"
-        ]
-    ).reset_index(drop=True)
-
-    # Recreate groups after cleaning
-    #
-    # Since dropping rows changes indexes, create groups directly
-    # from a temporary column instead.
-    #
-    # Therefore we rebuild the dataset/group relationship below.
-    #
-    # For simplicity, use a deterministic group assignment based
-    # on the row position and original files where possible.
-
-    removed = before - len(df)
-
-    print(f"Removed invalid rows: {removed}")
-    print(f"Rows after cleaning: {len(df)}")
-
-    return df
 
 
 # ============================================================
@@ -224,10 +108,17 @@ def load_and_clean_data(dataset_path):
 
 def map_label(label):
 
+    if pd.isna(label):
+        return "BENIGN"
+
     label = str(label).strip()
 
     if label == "BENIGN":
         return "BENIGN"
+
+    # --------------------------------------------------------
+    # DoS / DDoS
+    # --------------------------------------------------------
 
     if label in [
         "DDoS",
@@ -238,8 +129,16 @@ def map_label(label):
     ]:
         return "DOS_ATTACK"
 
+    # --------------------------------------------------------
+    # Port Scan
+    # --------------------------------------------------------
+
     if label == "PortScan":
         return "PORT_SCAN"
+
+    # --------------------------------------------------------
+    # Brute Force
+    # --------------------------------------------------------
 
     if label in [
         "FTP-Patator",
@@ -247,11 +146,23 @@ def map_label(label):
     ]:
         return "BRUTE_FORCE"
 
+    # --------------------------------------------------------
+    # Botnet
+    # --------------------------------------------------------
+
     if label == "Bot":
         return "BOTNET"
 
+    # --------------------------------------------------------
+    # Infiltration
+    # --------------------------------------------------------
+
     if label == "Infiltration":
         return "INFILTRATION"
+
+    # --------------------------------------------------------
+    # Web attacks
+    # --------------------------------------------------------
 
     if (
         "Web Attack" in label
@@ -259,10 +170,201 @@ def map_label(label):
     ):
         return "WEB_ATTACK"
 
-    # Unknown labels are treated as benign
-    # so the pipeline remains compatible with
-    # the defined LABELS.
+    # Unknown labels -> benign
     return "BENIGN"
+
+
+# ============================================================
+# LOAD CIC-IDS2017 CSV FILES
+#
+# IMPORTANT:
+# CIC-IDS2017 CSVs do NOT provide Source IP.
+# CIC-IDS2017 CSVs in this project may also NOT provide Timestamp.
+#
+# Therefore:
+#   Source IP  -> NOT required during training
+#   Timestamp  -> NOT required during training
+#
+# Source IP is obtained later from Scapy during LIVE LAN capture.
+# ============================================================
+
+def load_and_clean_data(dataset_path):
+
+    print()
+    print("=" * 70)
+    print("LOADING CIC-IDS2017 DATASET")
+    print("=" * 70)
+
+    print(
+        f"Dataset path: {dataset_path}"
+    )
+
+    if not os.path.exists(dataset_path):
+
+        raise FileNotFoundError(
+            f"Dataset directory does not exist: {dataset_path}"
+        )
+
+    files = sorted(
+        [
+            f
+            for f in os.listdir(dataset_path)
+            if f.lower().endswith(".csv")
+        ]
+    )
+
+    if not files:
+
+        raise FileNotFoundError(
+            f"No CSV files found in {dataset_path}"
+        )
+
+    print(
+        f"Found {len(files)} CSV files."
+    )
+
+    dfs = []
+
+    for filename in files:
+
+        filepath = os.path.join(
+            dataset_path,
+            filename
+        )
+
+        print()
+        print(
+            f"Reading: {filename}"
+        )
+
+        try:
+
+            df = pd.read_csv(
+                filepath,
+                encoding="cp1252",
+                low_memory=False
+            )
+
+            # ------------------------------------------------
+            # Clean column names
+            # ------------------------------------------------
+
+            df.columns = (
+                df.columns
+                .astype(str)
+                .str.replace("\ufeff", "", regex=False)
+                .str.strip()
+            )
+
+            print(
+                f"Rows: {len(df)}"
+            )
+
+            print(
+                f"Columns: {len(df.columns)}"
+            )
+
+            # ------------------------------------------------
+            # Label must exist
+            # ------------------------------------------------
+
+            if "Label" not in df.columns:
+
+                print(
+                    "WARNING: Label column missing."
+                )
+
+                print(
+                    "Skipping this file."
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # IMPORTANT
+            #
+            # Source IP is intentionally NOT required.
+            # Timestamp is intentionally NOT required.
+            # ------------------------------------------------
+
+            if "Source IP" not in df.columns:
+
+                print(
+                    "Source IP: not present "
+                    "(EXPECTED for CIC-IDS2017)"
+                )
+
+            else:
+
+                print(
+                    "Source IP: present"
+                )
+
+            if "Timestamp" not in df.columns:
+
+                print(
+                    "Timestamp: not present "
+                    "(OK - not required)"
+                )
+
+            else:
+
+                print(
+                    "Timestamp: present"
+                )
+
+            # ------------------------------------------------
+            # Store filename for temporal grouping.
+            #
+            # This is NOT a model feature.
+            # ------------------------------------------------
+
+            df["_dataset_file"] = filename
+
+            # Preserve order inside each CSV
+            df["_row_order"] = np.arange(
+                len(df),
+                dtype=np.int64
+            )
+
+            dfs.append(df)
+
+        except Exception as e:
+
+            print(
+                f"WARNING: Could not read {filename}"
+            )
+
+            print(
+                f"Reason: {e}"
+            )
+
+    if not dfs:
+
+        raise RuntimeError(
+            "No usable CIC-IDS2017 CSV files were found."
+        )
+
+    df = pd.concat(
+        dfs,
+        ignore_index=True
+    )
+
+    print()
+    print(
+        f"Combined rows: {len(df)}"
+    )
+
+    # --------------------------------------------------------
+    # Replace infinity
+    # --------------------------------------------------------
+
+    df = df.replace(
+        [np.inf, -np.inf],
+        np.nan
+    )
+
+    return df
 
 
 # ============================================================
@@ -271,112 +373,156 @@ def map_label(label):
 
 def extract_features(df):
 
-    print("\n============================================================")
+    print()
+    print("=" * 70)
     print("EXTRACTING FEATURES")
-    print("============================================================")
-
-    out = pd.DataFrame(index=df.index)
+    print("=" * 70)
 
     # --------------------------------------------------------
-    # 1. Flow duration
+    # CIC-IDS2017 columns required for our model
+    # --------------------------------------------------------
+
+    required_columns = [
+        "Flow Duration",
+        "Flow Packets/s",
+        "Flow Bytes/s",
+        "Packet Length Mean",
+        "Packet Length Std",
+        "SYN Flag Count",
+        "ACK Flag Count",
+        "RST Flag Count",
+        "FIN Flag Count",
+        "Label"
+    ]
+
+    missing = [
+        col
+        for col in required_columns
+        if col not in df.columns
+    ]
+
+    if missing:
+
+        raise ValueError(
+            "Required CIC-IDS2017 columns are missing:\n"
+            + "\n".join(
+                f"  - {col}"
+                for col in missing
+            )
+        )
+
+    out = pd.DataFrame(
+        index=df.index
+    )
+
+    # --------------------------------------------------------
+    # Convert numerical columns
+    # --------------------------------------------------------
+
+    numeric_columns = [
+        "Flow Duration",
+        "Flow Packets/s",
+        "Flow Bytes/s",
+        "Packet Length Mean",
+        "Packet Length Std",
+        "SYN Flag Count",
+        "ACK Flag Count",
+        "RST Flag Count",
+        "FIN Flag Count"
+    ]
+
+    for col in numeric_columns:
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
+
+    # --------------------------------------------------------
+    # Feature 1
     # --------------------------------------------------------
 
     out["flow_duration_ms"] = (
-        pd.to_numeric(
-            df["Flow Duration"],
-            errors="coerce"
-        ) / 1000.0
+        df["Flow Duration"] / 1000.0
     )
 
     # --------------------------------------------------------
-    # 2. Flow packets/sec
+    # Feature 2
     # --------------------------------------------------------
 
-    out["flow_packets_per_s"] = pd.to_numeric(
-        df["Flow Packets/s"],
-        errors="coerce"
+    out["flow_packets_per_s"] = (
+        df["Flow Packets/s"]
     )
 
     # --------------------------------------------------------
-    # 3. Flow bytes/sec
+    # Feature 3
     # --------------------------------------------------------
 
-    out["flow_bytes_per_s"] = pd.to_numeric(
-        df["Flow Bytes/s"],
-        errors="coerce"
+    out["flow_bytes_per_s"] = (
+        df["Flow Bytes/s"]
     )
 
     # --------------------------------------------------------
-    # 4. Packet length mean
+    # Feature 4
     # --------------------------------------------------------
 
-    out["packet_length_mean"] = pd.to_numeric(
-        df["Packet Length Mean"],
-        errors="coerce"
+    out["packet_length_mean"] = (
+        df["Packet Length Mean"]
     )
 
     # --------------------------------------------------------
-    # 5. Packet length std
+    # Feature 5
     # --------------------------------------------------------
 
-    out["packet_length_std"] = pd.to_numeric(
-        df["Packet Length Std"],
-        errors="coerce"
+    out["packet_length_std"] = (
+        df["Packet Length Std"]
     )
 
     # --------------------------------------------------------
-    # 6. SYN count
+    # Feature 6
     # --------------------------------------------------------
 
-    out["syn_count"] = pd.to_numeric(
-        df["SYN Flag Count"],
-        errors="coerce"
+    out["syn_count"] = (
+        df["SYN Flag Count"]
     )
 
     # --------------------------------------------------------
-    # 7. ACK count
+    # Feature 7
     # --------------------------------------------------------
 
-    out["ack_count"] = pd.to_numeric(
-        df["ACK Flag Count"],
-        errors="coerce"
+    out["ack_count"] = (
+        df["ACK Flag Count"]
     )
 
     # --------------------------------------------------------
-    # 8. RST count
+    # Feature 8
     # --------------------------------------------------------
 
-    out["rst_count"] = pd.to_numeric(
-        df["RST Flag Count"],
-        errors="coerce"
+    out["rst_count"] = (
+        df["RST Flag Count"]
     )
 
     # --------------------------------------------------------
-    # 9. FIN count
+    # Feature 9
     # --------------------------------------------------------
 
-    out["fin_count"] = pd.to_numeric(
-        df["FIN Flag Count"],
-        errors="coerce"
+    out["fin_count"] = (
+        df["FIN Flag Count"]
     )
 
     # --------------------------------------------------------
-    # 10. SYN/ACK ratio
+    # Feature 10
+    #
+    # Avoid division by zero
     # --------------------------------------------------------
-
-    ack = out["ack_count"].clip(lower=1)
 
     out["syn_ack_ratio"] = (
-        out["syn_count"] / ack
+        df["SYN Flag Count"]
+        /
+        df["ACK Flag Count"].clip(
+            lower=1
+        )
     )
-
-    # Clean numerical values
-    out = out.replace(
-        [np.inf, -np.inf],
-        np.nan
-    )
-
-    out = out.fillna(0)
 
     # --------------------------------------------------------
     # Label
@@ -385,60 +531,289 @@ def extract_features(df):
     out["Label"] = (
         df["Label"]
         .astype(str)
+        .str.strip()
         .apply(map_label)
     )
 
     # --------------------------------------------------------
-    # Timestamp
+    # Internal dataset information
+    #
+    # These are NOT ML features.
+    # They are only used to build LSTM sequences without
+    # needing Source IP or Timestamp.
     # --------------------------------------------------------
 
-    out["Timestamp"] = pd.to_datetime(
-        df["Timestamp"],
-        errors="coerce"
+    if "_dataset_file" in df.columns:
+
+        out["_dataset_file"] = (
+            df["_dataset_file"].values
+        )
+
+    else:
+
+        out["_dataset_file"] = "dataset"
+
+    if "_row_order" in df.columns:
+
+        out["_row_order"] = (
+            df["_row_order"].values
+        )
+
+    else:
+
+        out["_row_order"] = np.arange(
+            len(out)
+        )
+
+    # --------------------------------------------------------
+    # Clean
+    # --------------------------------------------------------
+
+    out = out.replace(
+        [np.inf, -np.inf],
+        np.nan
     )
 
     out = out.dropna(
-        subset=["Timestamp"]
+        subset=FEATURE_SCHEMA + ["Label"]
     )
 
-    print("Features extracted:")
+    # --------------------------------------------------------
+    # Verify feature schema
+    # --------------------------------------------------------
+
+    missing_features = [
+        feature
+        for feature in FEATURE_SCHEMA
+        if feature not in out.columns
+    ]
+
+    if missing_features:
+
+        raise ValueError(
+            "Project feature schema mismatch.\n"
+            "Missing features:\n"
+            + "\n".join(
+                f"  - {feature}"
+                for feature in missing_features
+            )
+        )
+
+    print()
+    print(
+        f"Rows remaining after cleaning: {len(out)}"
+    )
+
+    print()
+    print("Model Features:")
+
     for feature in FEATURE_SCHEMA:
-        print(f"  ✓ {feature}")
+
+        print(
+            f"  ✓ {feature}"
+        )
+
+    print()
+    print("Mapped Classes:")
+
+    print(
+        out["Label"]
+        .value_counts()
+        .to_string()
+    )
 
     return out
 
 
 # ============================================================
-# RANDOM FOREST
+# TRAIN RANDOM FOREST
 # ============================================================
 
 def train_random_forest(
-    X_train,
-    X_test,
-    y_train,
-    y_test,
-    label_encoder
+    df,
+    scaler
 ):
 
-    print("\n============================================================")
+    print()
+    print("=" * 70)
     print("TRAINING RANDOM FOREST")
-    print("============================================================")
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # X
+    # --------------------------------------------------------
+
+    X = df[
+        FEATURE_SCHEMA
+    ].values.astype(
+        np.float32
+    )
+
+    # --------------------------------------------------------
+    # Label encoder
+    # --------------------------------------------------------
+
+    label_encoder = LabelEncoder()
+
+    label_encoder.fit(
+        LABELS
+    )
+
+    y = label_encoder.transform(
+        df["Label"]
+    )
+
+    # --------------------------------------------------------
+    # Class distribution
+    # --------------------------------------------------------
+
+    print()
+    print("Class Distribution:")
+
+    counts = Counter(y)
+
+    for idx in range(
+        len(label_encoder.classes_)
+    ):
+
+        count = counts.get(
+            idx,
+            0
+        )
+
+        print(
+            f"  {label_encoder.classes_[idx]:<20} "
+            f"{count}"
+        )
+
+    # --------------------------------------------------------
+    # Make sure every class exists
+    # --------------------------------------------------------
+
+    missing_classes = [
+        label
+        for label in LABELS
+        if label not in set(
+            df["Label"]
+        )
+    ]
+
+    if missing_classes:
+
+        print()
+        print(
+            "WARNING: The following classes "
+            "are not present in this dataset:"
+        )
+
+        for label in missing_classes:
+
+            print(
+                f"  - {label}"
+            )
+
+    # --------------------------------------------------------
+    # Train / test split
+    #
+    # We do NOT use Source IP.
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "Creating train/test split..."
+    )
+
+    try:
+
+        X_train, X_test, y_train, y_test = (
+            train_test_split(
+                X,
+                y,
+                test_size=0.20,
+                random_state=SEED,
+                stratify=y
+            )
+        )
+
+    except ValueError as e:
+
+        print()
+        print(
+            "WARNING: Stratified split failed."
+        )
+
+        print(
+            f"Reason: {e}"
+        )
+
+        print(
+            "Using regular random split."
+        )
+
+        X_train, X_test, y_train, y_test = (
+            train_test_split(
+                X,
+                y,
+                test_size=0.20,
+                random_state=SEED
+            )
+        )
+
+    print(
+        f"Training samples: {len(X_train)}"
+    )
+
+    print(
+        f"Testing samples : {len(X_test)}"
+    )
+
+    # --------------------------------------------------------
+    # Fit scaler ONLY on training data
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "Fitting StandardScaler..."
+    )
+
+    X_train_scaled = scaler.fit_transform(
+        X_train
+    )
+
+    X_test_scaled = scaler.transform(
+        X_test
+    )
+
+    # --------------------------------------------------------
+    # Random Forest
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "Fitting Random Forest..."
+    )
 
     rf = RandomForestClassifier(
         n_estimators=200,
         max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        class_weight="balanced",
         random_state=SEED,
-        n_jobs=-1,
-        class_weight="balanced_subsample"
+        n_jobs=-1
     )
 
     rf.fit(
-        X_train,
+        X_train_scaled,
         y_train
     )
 
+    # --------------------------------------------------------
+    # Prediction
+    # --------------------------------------------------------
+
     predictions = rf.predict(
-        X_test
+        X_test_scaled
     )
 
     accuracy = accuracy_score(
@@ -446,28 +821,55 @@ def train_random_forest(
         predictions
     )
 
-    print(f"\nRandom Forest Accuracy: {accuracy:.4f}")
+    print()
+    print(
+        f"Random Forest Accuracy: "
+        f"{accuracy * 100:.2f}%"
+    )
 
-    print("\nClassification Report:")
+    # --------------------------------------------------------
+    # Classification report
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "Classification Report:"
+    )
+
     print(
         classification_report(
             y_test,
             predictions,
-            labels=np.arange(len(label_encoder.classes_)),
+            labels=np.arange(
+                len(label_encoder.classes_)
+            ),
             target_names=label_encoder.classes_,
             zero_division=0
         )
     )
 
-    print("\nConfusion Matrix:")
-    print(
-        confusion_matrix(
-            y_test,
-            predictions
+    # --------------------------------------------------------
+    # Confusion matrix
+    # --------------------------------------------------------
+
+    cm = confusion_matrix(
+        y_test,
+        predictions,
+        labels=np.arange(
+            len(label_encoder.classes_)
         )
     )
 
-    # Save model + label encoder together
+    print(
+        "Confusion Matrix:"
+    )
+
+    print(cm)
+
+    # --------------------------------------------------------
+    # Save RF artifact
+    # --------------------------------------------------------
+
     rf_artifact = {
         "model": rf,
         "label_encoder": label_encoder
@@ -483,72 +885,185 @@ def train_random_forest(
         rf_path
     )
 
-    print(f"\n✓ Saved Random Forest:")
-    print(rf_path)
+    print()
+    print(
+        f"✓ Saved: {rf_path}"
+    )
 
-    return rf
+    return (
+        rf,
+        label_encoder,
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        accuracy
+    )
 
 
 # ============================================================
-# LSTM TRAINING
+# CREATE LSTM SEQUENCES
+#
+# IMPORTANT:
+# We do NOT group by Source IP.
+#
+# Instead, sequences are created separately inside each
+# CIC-IDS2017 CSV file.
+#
+# This prevents sequences from crossing between unrelated
+# CSV files.
 # ============================================================
 
-def train_lstm(
-    X_scaled,
-    y,
-    sequence_length=10,
-    epochs=5,
-    batch_size=256
+def create_lstm_sequences(
+    df,
+    scaler,
+    label_encoder,
+    timesteps=5
 ):
-
-    print("\n============================================================")
-    print("TRAINING TEMPORAL LSTM")
-    print("============================================================")
-
-    print(f"Sequence length: {sequence_length}")
-    print(f"Input dimension: {X_scaled.shape[1]}")
-
-    # --------------------------------------------------------
-    # LSTM in the existing project is binary:
-    # sigmoid -> one value
-    #
-    # We therefore train it as:
-    # BENIGN = 0
-    # ATTACK = 1
-    # --------------------------------------------------------
 
     sequences = []
     targets = []
 
-    for i in range(
-        sequence_length,
-        len(X_scaled)
+    benign_index = label_encoder.transform(
+        ["BENIGN"]
+    )[0]
+
+    # --------------------------------------------------------
+    # Process each original CSV separately
+    # --------------------------------------------------------
+
+    for filename, group in df.groupby(
+        "_dataset_file",
+        sort=False
     ):
 
-        seq = X_scaled[
-            i - sequence_length:i
-        ]
+        group = group.sort_values(
+            "_row_order"
+        )
 
-        label = 0.0 if y[i] == 0 else 1.0
+        X = group[
+            FEATURE_SCHEMA
+        ].values.astype(
+            np.float32
+        )
 
-        sequences.append(seq)
-        targets.append(label)
+        labels = label_encoder.transform(
+            group["Label"]
+        )
 
-    if len(sequences) == 0:
-        print("WARNING: Not enough samples for LSTM.")
-        return
+        if len(X) < timesteps:
 
-    X_seq = np.asarray(
-        sequences,
-        dtype=np.float32
+            continue
+
+        X_scaled = scaler.transform(
+            X
+        )
+
+        # ----------------------------------------------------
+        # Sliding windows
+        # ----------------------------------------------------
+
+        for i in range(
+            len(X_scaled) - timesteps + 1
+        ):
+
+            sequence = X_scaled[
+                i:i + timesteps
+            ]
+
+            window_labels = labels[
+                i:i + timesteps
+            ]
+
+            # Binary temporal target:
+            #
+            # BENIGN = 0
+            # ANY ATTACK = 1
+            #
+            is_anomaly = (
+                np.any(
+                    window_labels
+                    != benign_index
+                )
+            )
+
+            sequences.append(
+                sequence
+            )
+
+            targets.append(
+                float(is_anomaly)
+            )
+
+    if not sequences:
+
+        return (
+            np.empty(
+                (
+                    0,
+                    timesteps,
+                    len(FEATURE_SCHEMA)
+                ),
+                dtype=np.float32
+            ),
+            np.empty(
+                (0,),
+                dtype=np.float32
+            )
+        )
+
+    return (
+        np.asarray(
+            sequences,
+            dtype=np.float32
+        ),
+        np.asarray(
+            targets,
+            dtype=np.float32
+        )
     )
 
-    y_seq = np.asarray(
-        targets,
-        dtype=np.float32
-    ).reshape(-1, 1)
 
-    print(f"LSTM sequences: {len(X_seq)}")
+# ============================================================
+# TRAIN LSTM
+# ============================================================
+
+def train_lstm(
+    df,
+    scaler,
+    label_encoder
+):
+
+    print()
+    print("=" * 70)
+    print("TRAINING TEMPORAL LSTM")
+    print("=" * 70)
+
+    X_seq, y_seq = create_lstm_sequences(
+        df,
+        scaler,
+        label_encoder,
+        timesteps=LSTM_TIMESTEPS
+    )
+
+    print()
+    print(
+        f"LSTM sequences: {len(X_seq)}"
+    )
+
+    if len(X_seq) == 0:
+
+        raise RuntimeError(
+            "Not enough data to create LSTM sequences."
+        )
+
+    print(
+        f"Sequence shape: {X_seq.shape}"
+    )
+
+    # --------------------------------------------------------
+    # Dataset
+    # --------------------------------------------------------
 
     X_tensor = torch.tensor(
         X_seq,
@@ -556,7 +1071,7 @@ def train_lstm(
     )
 
     y_tensor = torch.tensor(
-        y_seq,
+        y_seq.reshape(-1, 1),
         dtype=torch.float32
     )
 
@@ -567,26 +1082,40 @@ def train_lstm(
 
     loader = DataLoader(
         dataset,
-        batch_size=batch_size,
+        batch_size=LSTM_BATCH_SIZE,
         shuffle=True
     )
 
+    # --------------------------------------------------------
+    # Model
+    # --------------------------------------------------------
+
     model = TemporalLSTM(
-        input_dim=len(FEATURE_SCHEMA),
-        hidden_dim=64,
-        num_layers=2
+        input_dim=len(
+            FEATURE_SCHEMA
+        ),
+        hidden_dim=LSTM_HIDDEN_DIM,
+        num_layers=LSTM_NUM_LAYERS
     )
 
     criterion = nn.BCELoss()
 
     optimizer = optim.Adam(
         model.parameters(),
-        lr=0.001
+        lr=LSTM_LEARNING_RATE
     )
+
+    # --------------------------------------------------------
+    # Training
+    # --------------------------------------------------------
 
     model.train()
 
-    for epoch in range(epochs):
+    final_loss = 0.0
+
+    for epoch in range(
+        LSTM_EPOCHS
+    ):
 
         total_loss = 0.0
 
@@ -607,19 +1136,26 @@ def train_lstm(
 
             optimizer.step()
 
-            total_loss += loss.item()
+            total_loss += (
+                loss.item()
+                *
+                len(batch_x)
+            )
 
-        avg_loss = (
-            total_loss / len(loader)
+        final_loss = (
+            total_loss
+            /
+            len(dataset)
         )
 
         print(
-            f"Epoch {epoch + 1}/{epochs} "
-            f"- Loss: {avg_loss:.6f}"
+            f"Epoch "
+            f"{epoch + 1}/{LSTM_EPOCHS} "
+            f"- Loss: {final_loss:.6f}"
         )
 
     # --------------------------------------------------------
-    # Save LSTM
+    # Save model
     # --------------------------------------------------------
 
     model_path = os.path.join(
@@ -632,15 +1168,23 @@ def train_lstm(
         model_path
     )
 
-    # Existing lstm_model.py expects:
-    # input_dim
-    # hidden_dim
+    # --------------------------------------------------------
+    # Save LSTM metadata
+    # --------------------------------------------------------
 
     meta = {
-        "input_dim": len(FEATURE_SCHEMA),
-        "hidden_dim": 64,
-        "num_layers": 2,
-        "sequence_length": sequence_length
+        "input_dim": len(
+            FEATURE_SCHEMA
+        ),
+        "hidden_dim": LSTM_HIDDEN_DIM,
+        "num_layers": LSTM_NUM_LAYERS,
+        "timesteps": LSTM_TIMESTEPS,
+        "features": FEATURE_SCHEMA,
+        "target_type": "binary_anomaly",
+        "target_definition": {
+            "BENIGN": 0,
+            "ANY_ATTACK": 1
+        }
     }
 
     meta_path = os.path.join(
@@ -653,169 +1197,397 @@ def train_lstm(
         meta_path
     )
 
-    print("\n✓ Saved LSTM model:")
-    print(model_path)
+    print()
+    print(
+        f"✓ Saved: {model_path}"
+    )
 
-    print("✓ Saved LSTM metadata:")
-    print(meta_path)
+    print(
+        f"✓ Saved: {meta_path}"
+    )
 
-    return model
+    return (
+        model,
+        final_loss
+    )
 
 
 # ============================================================
-# DQN BOOTSTRAP TRAINING
+# CREATE DQN DATASET
 # ============================================================
 
-def train_dqn(
-    X_scaled,
-    y
+def create_dqn_dataset(
+    df,
+    rf,
+    scaler,
+    label_encoder
 ):
 
-    print("\n============================================================")
-    print("TRAINING DQN RESPONSE AGENT")
-    print("============================================================")
+    print()
+    print("=" * 70)
+    print("CREATING DQN TRAINING DATA")
+    print("=" * 70)
+
+    X = df[
+        FEATURE_SCHEMA
+    ].values.astype(
+        np.float32
+    )
+
+    X_scaled = scaler.transform(
+        X
+    )
+
+    labels = label_encoder.transform(
+        df["Label"]
+    )
 
     # --------------------------------------------------------
-    # Existing DQN expects:
-    #
-    # input_dim = 7
-    # actions = ALLOW / ALERT / BLOCK
-    #
-    # We use seven security state features:
-    #
-    # 0 flow_packets_per_s
-    # 1 flow_bytes_per_s
-    # 2 packet_length_mean
-    # 3 packet_length_std
-    # 4 syn_count
-    # 5 rst_count
-    # 6 syn_ack_ratio
-    #
-    # This is a bootstrap policy.
-    #
-    # BENIGN -> ALLOW
-    # ATTACK -> ALERT/BLOCK
-    #
-    # This gives the application a usable DQN artifact.
+    # RF probabilities
     # --------------------------------------------------------
 
-    dqn_indices = [
-        FEATURE_SCHEMA.index("flow_packets_per_s"),
-        FEATURE_SCHEMA.index("flow_bytes_per_s"),
-        FEATURE_SCHEMA.index("packet_length_mean"),
-        FEATURE_SCHEMA.index("packet_length_std"),
-        FEATURE_SCHEMA.index("syn_count"),
-        FEATURE_SCHEMA.index("rst_count"),
-        FEATURE_SCHEMA.index("syn_ack_ratio")
-    ]
+    rf_probs = rf.predict_proba(
+        X_scaled
+    )
 
-    states = X_scaled[
-        :,
-        dqn_indices
-    ]
+    max_rf_prob = np.max(
+        rf_probs,
+        axis=1
+    )
 
-    states = np.asarray(
-        states,
+    # --------------------------------------------------------
+    # Anomaly flag
+    # --------------------------------------------------------
+
+    benign_index = label_encoder.transform(
+        ["BENIGN"]
+    )[0]
+
+    anomaly = (
+        labels != benign_index
+    ).astype(
+        np.float32
+    )
+
+    # --------------------------------------------------------
+    # Packet rate
+    # --------------------------------------------------------
+
+    packets_per_s = (
+        df["flow_packets_per_s"]
+        .values.astype(
+            np.float32
+        )
+    )
+
+    # --------------------------------------------------------
+    # SYN count
+    # --------------------------------------------------------
+
+    syn_count = (
+        df["syn_count"]
+        .values.astype(
+            np.float32
+        )
+    )
+
+    # --------------------------------------------------------
+    # Normalize packet rate
+    # --------------------------------------------------------
+
+    packet_norm = np.clip(
+        packets_per_s / 10000.0,
+        0.0,
+        1.0
+    )
+
+    # --------------------------------------------------------
+    # Normalize SYN count
+    # --------------------------------------------------------
+
+    syn_norm = np.clip(
+        syn_count / 100.0,
+        0.0,
+        1.0
+    )
+
+    # --------------------------------------------------------
+    # Temporal/anomaly score
+    # --------------------------------------------------------
+
+    lstm_score = (
+        0.7 * anomaly
+        +
+        0.3 * packet_norm
+    )
+
+    lstm_score = np.clip(
+        lstm_score,
+        0.0,
+        1.0
+    )
+
+    # --------------------------------------------------------
+    # Risk score
+    # --------------------------------------------------------
+
+    risk_score = (
+        0.6 * max_rf_prob
+        +
+        0.4 * lstm_score
+    )
+
+    risk_score = np.clip(
+        risk_score,
+        0.0,
+        1.0
+    )
+
+    # --------------------------------------------------------
+    # Historical incident count
+    # --------------------------------------------------------
+
+    historical = np.zeros(
+        len(df),
+        dtype=np.float32
+    )
+
+    running_incidents = 0
+
+    for i in range(
+        len(df)
+    ):
+
+        historical[i] = min(
+            running_incidents / 100.0,
+            1.0
+        )
+
+        if anomaly[i] > 0:
+
+            running_incidents += 1
+
+    # --------------------------------------------------------
+    # Blocked state
+    #
+    # Initial training state = 0
+    # --------------------------------------------------------
+
+    blocked = np.zeros(
+        len(df),
         dtype=np.float32
     )
 
     # --------------------------------------------------------
-    # Action target:
+    # DQN STATE
+    #
+    # 0 RF confidence
+    # 1 LSTM/anomaly score
+    # 2 risk score
+    # 3 packet rate
+    # 4 SYN count
+    # 5 historical incidents
+    # 6 blocked state
+    # --------------------------------------------------------
+
+    states = np.column_stack(
+        [
+            max_rf_prob,
+            lstm_score,
+            risk_score,
+            packet_norm,
+            syn_norm,
+            historical,
+            blocked
+        ]
+    ).astype(
+        np.float32
+    )
+
+    # --------------------------------------------------------
+    # ACTIONS
     #
     # 0 = ALLOW
     # 1 = ALERT
     # 2 = BLOCK
     # --------------------------------------------------------
 
-    action_targets = []
+    actions = np.zeros(
+        len(risk_score),
+        dtype=np.int64
+    )
 
-    for label in y:
+    actions[
+        risk_score >= 0.40
+    ] = 1
 
-        if label == 0:
-            # BENIGN
-            action_targets.append(
-                [1.0, 0.0, -1.0]
-            )
+    actions[
+        risk_score >= 0.65
+    ] = 2
 
-        else:
-            # Attack
-            action_targets.append(
-                [-1.0, 1.0, 1.0]
-            )
+    # --------------------------------------------------------
+    # Q targets
+    # --------------------------------------------------------
 
-    action_targets = np.asarray(
-        action_targets,
+    q_targets = np.zeros(
+        (
+            len(states),
+            DQN_ACTIONS
+        ),
         dtype=np.float32
     )
 
-    states_tensor = torch.tensor(
+    for i, action in enumerate(
+        actions
+    ):
+
+        risk = risk_score[i]
+
+        # Base values
+        q_targets[i, 0] = (
+            1.0 - risk
+        )
+
+        q_targets[i, 1] = 0.5
+
+        q_targets[i, 2] = risk
+
+        # Reward selected action
+        if action == 0:
+
+            q_targets[i, 0] += 0.5
+
+        elif action == 1:
+
+            q_targets[i, 1] += 0.5
+
+        else:
+
+            q_targets[i, 2] += 0.5
+
+    return (
+        states,
+        q_targets
+    )
+
+
+# ============================================================
+# TRAIN DQN
+# ============================================================
+
+def train_dqn(
+    df,
+    rf,
+    scaler,
+    label_encoder
+):
+
+    print()
+    print("=" * 70)
+    print("TRAINING DQN")
+    print("=" * 70)
+
+    states, q_targets = create_dqn_dataset(
+        df,
+        rf,
+        scaler,
+        label_encoder
+    )
+
+    print()
+    print(
+        f"DQN training samples: {len(states)}"
+    )
+
+    # --------------------------------------------------------
+    # Tensor dataset
+    # --------------------------------------------------------
+
+    X_tensor = torch.tensor(
         states,
         dtype=torch.float32
     )
 
-    target_tensor = torch.tensor(
-        action_targets,
+    y_tensor = torch.tensor(
+        q_targets,
         dtype=torch.float32
     )
 
     dataset = TensorDataset(
-        states_tensor,
-        target_tensor
+        X_tensor,
+        y_tensor
     )
 
     loader = DataLoader(
         dataset,
-        batch_size=256,
+        batch_size=DQN_BATCH_SIZE,
         shuffle=True
     )
 
-    model = DQN(
-        input_dim=7,
-        hidden_dim=32,
-        num_actions=3
-    )
+    # --------------------------------------------------------
+    # DQN model
+    # --------------------------------------------------------
 
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=0.001
+    model = DQN(
+        input_dim=DQN_INPUT_DIM,
+        hidden_dim=DQN_HIDDEN_DIM,
+        num_actions=DQN_ACTIONS
     )
 
     criterion = nn.MSELoss()
 
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=DQN_LEARNING_RATE
+    )
+
+    # --------------------------------------------------------
+    # Training
+    # --------------------------------------------------------
+
     model.train()
 
-    epochs = 5
+    final_loss = 0.0
 
-    for epoch in range(epochs):
+    for epoch in range(
+        DQN_EPOCHS
+    ):
 
         total_loss = 0.0
 
-        for batch_x, batch_target in loader:
+        for batch_x, batch_y in loader:
 
             optimizer.zero_grad()
 
-            q_values = model(
+            predictions = model(
                 batch_x
             )
 
             loss = criterion(
-                q_values,
-                batch_target
+                predictions,
+                batch_y
             )
 
             loss.backward()
 
             optimizer.step()
 
-            total_loss += loss.item()
+            total_loss += (
+                loss.item()
+                *
+                len(batch_x)
+            )
 
-        avg_loss = (
-            total_loss / len(loader)
+        final_loss = (
+            total_loss
+            /
+            len(dataset)
         )
 
         print(
-            f"Epoch {epoch + 1}/{epochs} "
-            f"- Loss: {avg_loss:.6f}"
+            f"Epoch "
+            f"{epoch + 1}/{DQN_EPOCHS} "
+            f"- Loss: {final_loss:.6f}"
         )
 
     # --------------------------------------------------------
@@ -832,202 +1604,24 @@ def train_dqn(
         dqn_path
     )
 
-    print("\n✓ Saved DQN:")
-    print(dqn_path)
+    print()
+    print(
+        f"✓ Saved: {dqn_path}"
+    )
 
-    return model
+    return (
+        model,
+        final_loss
+    )
 
 
 # ============================================================
-# MAIN TRAINING PIPELINE
+# SAVE SCALER
 # ============================================================
 
-def train_models(data_path):
-
-    start_time = time.time()
-
-    create_artifact_dir()
-
-    # --------------------------------------------------------
-    # 1. LOAD DATA
-    # --------------------------------------------------------
-
-    df_raw = load_and_clean_data(
-        data_path
-    )
-
-    # --------------------------------------------------------
-    # 2. EXTRACT FEATURES
-    # --------------------------------------------------------
-
-    df = extract_features(
-        df_raw
-    )
-
-    # Sort chronologically
-    df = df.sort_values(
-        "Timestamp"
-    ).reset_index(
-        drop=True
-    )
-
-    # --------------------------------------------------------
-    # 3. CHECK FEATURES
-    # --------------------------------------------------------
-
-    print("\n============================================================")
-    print("FEATURE SCHEMA CHECK")
-    print("============================================================")
-
-    print(
-        f"Expected features: {len(FEATURE_SCHEMA)}"
-    )
-
-    for feature in FEATURE_SCHEMA:
-
-        if feature not in df.columns:
-            raise ValueError(
-                f"Missing feature: {feature}"
-            )
-
-        print(
-            f"✓ {feature}"
-        )
-
-    # --------------------------------------------------------
-    # 4. X
-    # --------------------------------------------------------
-
-    X = df[
-        FEATURE_SCHEMA
-    ].astype(
-        np.float32
-    ).values
-
-    # --------------------------------------------------------
-    # 5. LABEL ENCODING
-    # --------------------------------------------------------
-
-    label_encoder = LabelEncoder()
-
-    label_encoder.fit(
-        LABELS
-    )
-
-    y = label_encoder.transform(
-        df["Label"]
-    )
-
-    # --------------------------------------------------------
-    # 6. CLASS DISTRIBUTION
-    # --------------------------------------------------------
-
-    print("\n============================================================")
-    print("CLASS DISTRIBUTION")
-    print("============================================================")
-
-    class_counts = Counter(y)
-
-    for class_idx in sorted(class_counts):
-
-        class_name = (
-            label_encoder.classes_[class_idx]
-        )
-
-        count = class_counts[class_idx]
-
-        print(
-            f"{class_name:20s}: {count}"
-        )
-
-    # --------------------------------------------------------
-    # 7. GROUP CREATION
-    # --------------------------------------------------------
-    #
-    # IMPORTANT:
-    #
-    # Source IP is NOT available in your CSV.
-    #
-    # Therefore we cannot do:
-    #
-    # GroupKFold(... groups=df["Source IP"])
-    #
-    # Instead, we create deterministic groups from
-    # chronological chunks.
-    #
-    # This allows the training pipeline to run without
-    # requiring Source IP.
-    # --------------------------------------------------------
-
-    print("\n============================================================")
-    print("CREATING LEAKAGE-SAFE GROUPS")
-    print("============================================================")
-
-    n_groups = 20
-
-    group_ids = np.arange(
-        len(X)
-    ) % n_groups
-
-    gkf = GroupKFold(
-        n_splits=5
-    )
-
-    train_idx, test_idx = next(
-        gkf.split(
-            X,
-            y,
-            groups=group_ids
-        )
-    )
-
-    X_train = X[
-        train_idx
-    ]
-
-    X_test = X[
-        test_idx
-    ]
-
-    y_train = y[
-        train_idx
-    ]
-
-    y_test = y[
-        test_idx
-    ]
-
-    print(
-        f"Training samples: {len(X_train)}"
-    )
-
-    print(
-        f"Testing samples:  {len(X_test)}"
-    )
-
-    # --------------------------------------------------------
-    # 8. SCALER
-    # --------------------------------------------------------
-
-    print("\n============================================================")
-    print("TRAINING STANDARD SCALER")
-    print("============================================================")
-
-    scaler = StandardScaler()
-
-    X_train_scaled = scaler.fit_transform(
-        X_train
-    )
-
-    X_test_scaled = scaler.transform(
-        X_test
-    )
-
-    # Fit scaler on all data for LSTM/DQN sequence creation.
-    # The RF evaluation still uses the train-fitted scaler.
-    X_all_scaled = scaler.transform(
-        X
-    )
+def save_scaler(
+    scaler
+):
 
     scaler_path = os.path.join(
         ARTIFACT_DIR,
@@ -1040,72 +1634,199 @@ def train_models(data_path):
     )
 
     print(
-        f"✓ Saved scaler:\n{scaler_path}"
+        f"✓ Saved: {scaler_path}"
     )
 
-    # --------------------------------------------------------
-    # 9. RANDOM FOREST
-    # --------------------------------------------------------
 
-    rf = train_random_forest(
-        X_train_scaled,
-        X_test_scaled,
-        y_train,
-        y_test,
-        label_encoder
+# ============================================================
+# SAVE LABEL ENCODER
+# ============================================================
+
+def save_label_encoder(
+    label_encoder
+):
+
+    path = os.path.join(
+        ARTIFACT_DIR,
+        "label_encoder.joblib"
     )
 
-    # --------------------------------------------------------
-    # 10. LSTM
-    # --------------------------------------------------------
-
-    lstm = train_lstm(
-        X_all_scaled,
-        y,
-        sequence_length=10,
-        epochs=5,
-        batch_size=256
+    joblib.dump(
+        label_encoder,
+        path
     )
 
-    # --------------------------------------------------------
-    # 11. DQN
-    # --------------------------------------------------------
-
-    dqn = train_dqn(
-        X_all_scaled,
-        y
+    print(
+        f"✓ Saved: {path}"
     )
 
-    # --------------------------------------------------------
-    # 12. SAVE TRAINING METADATA
-    # --------------------------------------------------------
+
+# ============================================================
+# SAVE SHAP BACKGROUND
+# ============================================================
+
+def save_shap_background(
+    X_train_scaled
+):
+
+    if len(X_train_scaled) == 0:
+
+        return
+
+    sample_size = min(
+        200,
+        len(X_train_scaled)
+    )
+
+    rng = np.random.default_rng(
+        SEED
+    )
+
+    indices = rng.choice(
+        len(X_train_scaled),
+        size=sample_size,
+        replace=False
+    )
+
+    background = (
+        X_train_scaled[
+            indices
+        ]
+    )
+
+    path = os.path.join(
+        ARTIFACT_DIR,
+        "shap_background.joblib"
+    )
+
+    joblib.dump(
+        background,
+        path
+    )
+
+    print(
+        f"✓ Saved: {path}"
+    )
+
+
+# ============================================================
+# SAVE METADATA
+# ============================================================
+
+def save_metadata(
+    df,
+    rf_accuracy,
+    lstm_loss,
+    dqn_loss,
+    start_time
+):
 
     metadata = {
+
+        "status": "TRAINED",
+
+        "project": "XRL-IDARS",
+
+        "dataset": "CIC-IDS2017",
+
         "feature_schema": FEATURE_SCHEMA,
+
         "labels": LABELS,
-        "num_features": len(FEATURE_SCHEMA),
 
-        "rf_model": "rf_model.joblib",
+        "num_features": len(
+            FEATURE_SCHEMA
+        ),
 
-        "lstm_model": "lstm_model.pt",
-        "lstm_meta": "lstm_meta.joblib",
-        "lstm_sequence_length": 10,
+        "num_classes": len(
+            LABELS
+        ),
 
-        "dqn_model": "dqn_model.pt",
-        "dqn_input_dim": 7,
-        "dqn_actions": [
-            "ALLOW",
-            "ALERT",
-            "BLOCK"
-        ],
+        # ----------------------------------------------------
+        # IMPORTANT ARCHITECTURE INFORMATION
+        # ----------------------------------------------------
 
-        "source_ip_training": False,
-        "source_ip_runtime": True
+        "source_ip_used_in_training": False,
+
+        "timestamp_required_in_training": False,
+
+        "live_source_ip_provider": "Scapy",
+
+        "training_sequence_group": "CSV_FILENAME",
+
+        # ----------------------------------------------------
+        # Random Forest
+        # ----------------------------------------------------
+
+        "random_forest": {
+
+            "n_estimators": 200,
+
+            "accuracy": rf_accuracy
+        },
+
+        # ----------------------------------------------------
+        # LSTM
+        # ----------------------------------------------------
+
+        "lstm": {
+
+            "timesteps": LSTM_TIMESTEPS,
+
+            "input_dim": len(
+                FEATURE_SCHEMA
+            ),
+
+            "hidden_dim": LSTM_HIDDEN_DIM,
+
+            "num_layers": LSTM_NUM_LAYERS,
+
+            "target_type": "binary",
+
+            "target_definition": {
+                "BENIGN": 0,
+                "ANY_ATTACK": 1
+            },
+
+            "loss": lstm_loss
+        },
+
+        # ----------------------------------------------------
+        # DQN
+        # ----------------------------------------------------
+
+        "dqn": {
+
+            "input_dim": DQN_INPUT_DIM,
+
+            "hidden_dim": DQN_HIDDEN_DIM,
+
+            "num_actions": DQN_ACTIONS,
+
+            "actions": [
+                "ALLOW",
+                "ALERT",
+                "BLOCK"
+            ],
+
+            "loss": dqn_loss
+        },
+
+        # ----------------------------------------------------
+        # Dataset
+        # ----------------------------------------------------
+
+        "training_rows": len(df),
+
+        "training_time_seconds": (
+            time.time()
+            -
+            start_time
+        )
     }
 
     metadata_path = os.path.join(
         ARTIFACT_DIR,
-        "training_metadata.joblib"
+        "metadata.joblib"
     )
 
     joblib.dump(
@@ -1114,106 +1835,387 @@ def train_models(data_path):
     )
 
     print(
-        f"\n✓ Saved training metadata:\n"
-        f"{metadata_path}"
+        f"✓ Saved: {metadata_path}"
     )
 
-    # --------------------------------------------------------
-    # COMPLETE
-    # --------------------------------------------------------
 
-    elapsed = (
-        time.time() - start_time
-    )
+# ============================================================
+# ARTIFACT CHECK
+# ============================================================
 
-    print("\n")
-    print("============================================================")
-    print("              TRAINING COMPLETE")
-    print("============================================================")
+def check_artifacts():
 
-    print(
-        f"Training time: {elapsed / 60:.2f} minutes"
-    )
+    print()
+    print("=" * 70)
+    print("CHECKING GENERATED ARTIFACTS")
+    print("=" * 70)
 
-    print("\nArtifacts created:")
+    required_artifacts = [
 
-    for filename in sorted(
-        os.listdir(ARTIFACT_DIR)
-    ):
+        "rf_model.joblib",
 
-        filepath = os.path.join(
+        "scaler.joblib",
+
+        "label_encoder.joblib",
+
+        "shap_background.joblib",
+
+        "lstm_model.pt",
+
+        "lstm_meta.joblib",
+
+        "dqn_model.pt",
+
+        "metadata.joblib"
+    ]
+
+    all_ok = True
+
+    for filename in required_artifacts:
+
+        path = os.path.join(
             ARTIFACT_DIR,
             filename
         )
 
-        if os.path.isfile(filepath):
+        if os.path.exists(path):
 
             size_mb = (
-                os.path.getsize(filepath)
-                / (1024 * 1024)
+                os.path.getsize(path)
+                /
+                (1024 * 1024)
             )
 
             print(
-                f"  ✓ {filename:<30} "
+                f"✓ {filename:<28} "
                 f"{size_mb:.2f} MB"
             )
 
-    print("\nPipeline:")
-    print(
-        "CIC-IDS2017 CSV"
-        " → Feature Extraction"
-        " → StandardScaler"
-        " → Random Forest"
-    )
+        else:
 
-    print(
-        "                 ↘ LSTM temporal detection"
-    )
+            print(
+                f"✗ MISSING: {filename}"
+            )
 
-    print(
-        "                 ↘ DQN response policy"
-    )
+            all_ok = False
 
-    print("\nRuntime:")
-    print(
-        "Scapy"
-        " → Source IP + packet information"
-        " → Flow features"
-        " → ML API"
-        " → RF/LSTM"
-        " → DQN"
-        " → ALLOW / ALERT / BLOCK"
-    )
-
-    print(
-        "\nIMPORTANT: Source IP is still obtained "
-        "from Scapy during LIVE LAN capture."
-    )
-
-    print("============================================================")
+    return all_ok
 
 
 # ============================================================
-# COMMAND LINE
+# MAIN TRAINING PIPELINE
+# ============================================================
+
+def train_models(
+    data_path
+):
+
+    start_time = time.time()
+
+    print()
+    print("=" * 70)
+    print("XRL-IDARS COMPLETE TRAINING PIPELINE")
+    print("=" * 70)
+
+    print(
+        f"Dataset: {data_path}"
+    )
+
+    print(
+        f"Artifacts: {ARTIFACT_DIR}"
+    )
+
+    print()
+    print(
+        "TRAINING DESIGN:"
+    )
+
+    print(
+        "  Source IP during training : NOT REQUIRED"
+    )
+
+    print(
+        "  Timestamp during training  : NOT REQUIRED"
+    )
+
+    print(
+        "  Source IP during LIVE LAN : Scapy"
+    )
+
+    print(
+        "  LSTM grouping              : CSV file"
+    )
+
+    # --------------------------------------------------------
+    # 1. Artifact directory
+    # --------------------------------------------------------
+
+    create_artifact_dir()
+
+    # --------------------------------------------------------
+    # 2. Load dataset
+    # --------------------------------------------------------
+
+    raw_df = load_and_clean_data(
+        data_path
+    )
+
+    # --------------------------------------------------------
+    # 3. Extract features
+    # --------------------------------------------------------
+
+    df = extract_features(
+        raw_df
+    )
+
+    # --------------------------------------------------------
+    # 4. Verify dataset
+    # --------------------------------------------------------
+
+    if len(df) == 0:
+
+        raise RuntimeError(
+            "No rows remain after feature extraction."
+        )
+
+    print()
+    print(
+        f"Final training rows: {len(df)}"
+    )
+
+    # --------------------------------------------------------
+    # 5. Scaler
+    # --------------------------------------------------------
+
+    scaler = StandardScaler()
+
+    # --------------------------------------------------------
+    # 6. Random Forest
+    # --------------------------------------------------------
+
+    (
+        rf,
+        label_encoder,
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        rf_accuracy
+    ) = train_random_forest(
+        df,
+        scaler
+    )
+
+    # --------------------------------------------------------
+    # 7. Save scaler
+    # --------------------------------------------------------
+
+    save_scaler(
+        scaler
+    )
+
+    # --------------------------------------------------------
+    # 8. Save label encoder
+    # --------------------------------------------------------
+
+    save_label_encoder(
+        label_encoder
+    )
+
+    # --------------------------------------------------------
+    # 9. SHAP background
+    # --------------------------------------------------------
+
+    X_train_scaled = scaler.transform(
+        X_train
+    )
+
+    save_shap_background(
+        X_train_scaled
+    )
+
+    # --------------------------------------------------------
+    # 10. LSTM
+    # --------------------------------------------------------
+
+    (
+        lstm_model,
+        lstm_loss
+    ) = train_lstm(
+        df,
+        scaler,
+        label_encoder
+    )
+
+    # --------------------------------------------------------
+    # 11. DQN
+    # --------------------------------------------------------
+
+    (
+        dqn_model,
+        dqn_loss
+    ) = train_dqn(
+        df,
+        rf,
+        scaler,
+        label_encoder
+    )
+
+    # --------------------------------------------------------
+    # 12. Metadata
+    # --------------------------------------------------------
+
+    save_metadata(
+        df,
+        rf_accuracy,
+        lstm_loss,
+        dqn_loss,
+        start_time
+    )
+
+    # --------------------------------------------------------
+    # 13. Artifact check
+    # --------------------------------------------------------
+
+    all_ok = check_artifacts()
+
+    # --------------------------------------------------------
+    # 14. Final summary
+    # --------------------------------------------------------
+
+    total_time = (
+        time.time()
+        -
+        start_time
+    )
+
+    print()
+    print("=" * 70)
+    print("TRAINING SUMMARY")
+    print("=" * 70)
+
+    print()
+    print(
+        f"Total rows       : {len(df)}"
+    )
+
+    print(
+        f"Training rows    : {len(X_train)}"
+    )
+
+    print(
+        f"Testing rows     : {len(X_test)}"
+    )
+
+    print(
+        f"RF Accuracy      : "
+        f"{rf_accuracy * 100:.2f}%"
+    )
+
+    print(
+        f"LSTM Final Loss  : "
+        f"{lstm_loss:.6f}"
+    )
+
+    print(
+        f"DQN Final Loss   : "
+        f"{dqn_loss:.6f}"
+    )
+
+    print()
+    print(
+        "Features:"
+    )
+
+    for feature in FEATURE_SCHEMA:
+
+        print(
+            f"  - {feature}"
+        )
+
+    print()
+    print(
+        "Labels:"
+    )
+
+    for label in LABELS:
+
+        print(
+            f"  - {label}"
+        )
+
+    print()
+    print(
+        "Source IP training dependency : NO"
+    )
+
+    print(
+        "Timestamp training dependency  : NO"
+    )
+
+    print(
+        "Live Source IP                 : Scapy"
+    )
+
+    print(
+        "LSTM sequence grouping        : CSV file"
+    )
+
+    print()
+    print(
+        f"Total training time: "
+        f"{total_time:.2f} seconds"
+    )
+
+    print()
+
+    if all_ok:
+
+        print(
+            "✓ ALL REQUIRED ARTIFACTS CREATED"
+        )
+
+        print(
+            "✓ TRAINING COMPLETED SUCCESSFULLY"
+        )
+
+    else:
+
+        print(
+            "WARNING: SOME ARTIFACTS ARE MISSING"
+        )
+
+    print(
+        "=" * 70
+    )
+
+
+# ============================================================
+# COMMAND LINE ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "XRL-IDARS ML Training Pipeline"
-        )
-    )
+    if len(sys.argv) < 2:
 
-    parser.add_argument(
-        "dataset_path",
-        help=(
-            "Path to CIC-IDS2017 CSV directory"
-        )
-    )
+        print()
 
-    args = parser.parse_args()
+        print(
+            "Usage:"
+        )
+
+        print(
+            "python3 "
+            "ml_engine/training/train_pipeline.py "
+            "/path/to/dataset"
+        )
+
+        print()
+
+        sys.exit(1)
+
+    dataset_path = sys.argv[1]
 
     train_models(
-        args.dataset_path
+        dataset_path
     )
