@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+*.zip
+ml_engine/data/
+ml_engine/artifacts/
+__pycache__/
+venv/
