@@ -1,3 +1,4 @@
+cat > ml_engine/explainability/shap_engine.py <<'PY'
 import numpy as np
 import shap
 
@@ -6,99 +7,145 @@ class SHAPEngine:
     """
     SHAP explainability engine for the trained Random Forest.
 
-    Supports SHAP outputs returned as:
-      - list of arrays
-      - 2-D numpy arrays
-      - 3-D numpy arrays
+    Supports the project's saved artifact format:
 
-    The final explanation contains one importance value
-    for each input feature.
+        {
+            "model": RandomForestClassifier(...),
+            "label_encoder": LabelEncoder()
+        }
+
+    Also supports receiving the RandomForestClassifier directly.
+
+    Handles SHAP outputs from different SHAP versions and converts
+    them into one importance value per input feature.
     """
 
-    def __init__(self, model=None, feature_names=None):
-        self.model = model
+    DEFAULT_FEATURE_NAMES = [
+        "flow_duration_ms",
+        "flow_packets_per_s",
+        "flow_bytes_per_s",
+        "packet_length_mean",
+        "packet_length_std",
+        "syn_count",
+        "ack_count",
+        "rst_count",
+        "fin_count",
+        "syn_ack_ratio",
+    ]
 
-        self.feature_names = feature_names or [
-            "flow_duration_ms",
-            "flow_packets_per_s",
-            "flow_bytes_per_s",
-            "packet_length_mean",
-            "packet_length_std",
-            "syn_count",
-            "ack_count",
-            "rst_count",
-            "fin_count",
-            "syn_ack_ratio",
-        ]
+    def __init__(self, model, feature_names=None):
+        """
+        Parameters
+        ----------
+        model:
+            Either:
+              1. RandomForestClassifier
+              2. Dictionary containing:
+                   {
+                       "model": RandomForestClassifier,
+                       "label_encoder": LabelEncoder
+                   }
+
+        feature_names:
+            Optional list of feature names.
+        """
+
+        # ---------------------------------------------------------
+        # IMPORTANT:
+        # rf_model.joblib contains a dictionary, not the classifier
+        # directly.
+        # ---------------------------------------------------------
+        if isinstance(model, dict):
+
+            if "model" not in model:
+                raise ValueError(
+                    "Model dictionary does not contain a 'model' key."
+                )
+
+            self.model = model["model"]
+            self.label_encoder = model.get("label_encoder")
+
+        else:
+            self.model = model
+            self.label_encoder = None
+
+        self.feature_names = (
+            feature_names
+            if feature_names is not None
+            else self.DEFAULT_FEATURE_NAMES.copy()
+        )
 
         self.explainer = None
 
-        # Create the explainer immediately if a model was supplied.
-        if self.model is not None:
-            self._create_explainer()
+    # =============================================================
+    # LOAD
+    # =============================================================
 
-    # =========================================================
-    # LOAD MODEL
-    # =========================================================
-
-    def load(self, model):
+    @classmethod
+    def load(cls, model_path, feature_names=None):
         """
-        Load or replace the trained model.
+        Load a saved model artifact.
 
-        This method is required by ml_engine/api/main.py.
+        Supports both:
+          - direct sklearn model
+          - dictionary artifact containing "model"
         """
 
-        self.model = model
-        self.explainer = None
+        import joblib
 
-        self._create_explainer()
+        artifact = joblib.load(model_path)
 
-    # =========================================================
+        return cls(
+            artifact,
+            feature_names=feature_names
+        )
+
+    # =============================================================
     # CREATE SHAP EXPLAINER
-    # =========================================================
+    # =============================================================
 
     def _create_explainer(self):
-        """
-        Create the SHAP TreeExplainer.
-        """
-
-        if self.model is None:
-            raise ValueError(
-                "Cannot create SHAP explainer: model is None."
-            )
 
         if self.explainer is None:
+
+            # Verify that we actually have a sklearn model.
+            if isinstance(self.model, dict):
+
+                if "model" not in self.model:
+                    raise ValueError(
+                        "Invalid model dictionary: missing 'model'."
+                    )
+
+                self.model = self.model["model"]
+
             self.explainer = shap.TreeExplainer(
                 self.model
             )
 
-    # =========================================================
+    # =============================================================
     # NORMALIZE SHAP OUTPUT
-    # =========================================================
+    # =============================================================
 
     def _normalize_shap_values(self, shap_values):
         """
-        Convert SHAP output from different SHAP versions
-        into:
+        Convert SHAP output from different SHAP versions into:
 
             samples x features
 
-        For multi-class classification, absolute SHAP
-        contributions are averaged across classes.
+        For multi-class classification, absolute SHAP impacts
+        are averaged across classes.
         """
 
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
         # CASE 1:
-        # SHAP returns a list
-        #
-        # Example:
+        # Older SHAP versions may return a list:
         #
         # [
-        #     class_0 -> (samples, features),
-        #     class_1 -> (samples, features),
-        #     ...
+        #   class_0 -> samples x features,
+        #   class_1 -> samples x features,
+        #   ...
         # ]
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
 
         if isinstance(shap_values, list):
 
@@ -106,15 +153,14 @@ class SHAPEngine:
 
             for value in shap_values:
 
-                arr = np.asarray(value)
+                arr = np.asarray(value, dtype=np.float64)
 
                 if arr.ndim == 1:
                     arr = arr.reshape(1, -1)
 
-                elif arr.ndim > 2:
-                    arr = arr.reshape(
-                        arr.shape[0],
-                        -1
+                elif arr.ndim != 2:
+                    raise ValueError(
+                        f"Unexpected SHAP class shape: {arr.shape}"
                     )
 
                 arrays.append(arr)
@@ -130,8 +176,7 @@ class SHAPEngine:
                 axis=0
             )
 
-            # Average absolute SHAP impact
-            # across classes.
+            # Average absolute impact across classes.
             normalized = np.mean(
                 np.abs(stacked),
                 axis=0
@@ -139,18 +184,19 @@ class SHAPEngine:
 
             return normalized
 
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
         # CASE 2:
-        # SHAP returns numpy ndarray
-        # -----------------------------------------------------
+        # Newer SHAP versions return ndarray.
+        # ---------------------------------------------------------
 
-        arr = np.asarray(shap_values)
+        arr = np.asarray(
+            shap_values,
+            dtype=np.float64
+        )
 
-        # -----------------------------------------------------
-        # 1-D
-        #
-        # features
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # (features,)
+        # ---------------------------------------------------------
 
         if arr.ndim == 1:
 
@@ -158,47 +204,42 @@ class SHAPEngine:
                 arr
             ).reshape(1, -1)
 
-        # -----------------------------------------------------
-        # 2-D
-        #
-        # samples x features
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # (samples, features)
+        # ---------------------------------------------------------
 
         if arr.ndim == 2:
 
             return np.abs(arr)
 
-        # -----------------------------------------------------
-        # 3-D
+        # ---------------------------------------------------------
+        # (samples, features, classes)
         #
-        # Multi-class SHAP output.
-        # -----------------------------------------------------
+        # SHAP 0.52 commonly uses this format for multiclass RF.
+        # ---------------------------------------------------------
 
         if arr.ndim == 3:
 
-            # ---------------------------------------------
+            # Normal modern SHAP format:
+            #
             # samples x features x classes
-            # ---------------------------------------------
-
-            if (
-                arr.shape[0] >= 1
-                and arr.shape[1] == len(self.feature_names)
-            ):
+            #
+            if arr.shape[1] == len(self.feature_names):
 
                 normalized = np.mean(
                     np.abs(arr),
-                    axis=-1
+                    axis=2
                 )
 
                 return normalized
 
-            # ---------------------------------------------
+            # -----------------------------------------------------
+            # Alternative:
+            #
             # classes x samples x features
-            # ---------------------------------------------
+            # -----------------------------------------------------
 
-            if arr.shape[-1] == len(
-                self.feature_names
-            ):
+            if arr.shape[2] == len(self.feature_names):
 
                 normalized = np.mean(
                     np.abs(arr),
@@ -207,11 +248,9 @@ class SHAPEngine:
 
                 return normalized
 
-            # ---------------------------------------------
-            # One sample:
-            #
-            # 1 x features x classes
-            # ---------------------------------------------
+            # -----------------------------------------------------
+            # Single sample fallback
+            # -----------------------------------------------------
 
             if arr.shape[0] == 1:
 
@@ -222,65 +261,45 @@ class SHAPEngine:
 
                 return normalized
 
-            # ---------------------------------------------
-            # Safe fallback
-            # ---------------------------------------------
-
-            normalized = np.mean(
-                np.abs(arr),
-                axis=-1
+            raise ValueError(
+                "Unable to determine SHAP multiclass output "
+                f"orientation: {arr.shape}"
             )
 
-            return normalized
-
-        # -----------------------------------------------------
-        # Unsupported SHAP output
-        # -----------------------------------------------------
-
         raise ValueError(
-            "Unsupported SHAP output shape: "
-            f"{arr.shape}"
+            f"Unsupported SHAP output shape: {arr.shape}"
         )
 
-    # =========================================================
+    # =============================================================
     # EXPLAIN
-    # =========================================================
+    # =============================================================
 
-    def explain(
-        self,
-        X,
-        original_features=None
-    ):
+    def explain(self, X, original_features=None):
         """
-        Generate SHAP feature explanations.
+        Generate feature-level SHAP explanations.
 
         Parameters
         ----------
         X:
             Scaled model input.
+            Expected shape:
+                (1, number_of_features)
 
         original_features:
             Optional original feature vector.
             Kept for API compatibility.
-
-        Returns
-        -------
-        dict
-            Feature explanations and top features.
         """
 
-        # Make sure the SHAP explainer exists.
         self._create_explainer()
 
-        # Convert input to numpy.
         X = np.asarray(
             X,
             dtype=np.float64
         )
 
-        # -----------------------------------------------------
-        # Ensure 2-D input
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Ensure 2-D input.
+        # ---------------------------------------------------------
 
         if X.ndim == 1:
 
@@ -296,92 +315,70 @@ class SHAPEngine:
                 f"got shape {X.shape}"
             )
 
-        # -----------------------------------------------------
-        # Validate feature count
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Verify feature count.
+        # ---------------------------------------------------------
 
-        if X.shape[1] != len(
-            self.feature_names
-        ):
+        if X.shape[1] != len(self.feature_names):
 
             raise ValueError(
-                "Feature count mismatch. "
-                f"Model input contains {X.shape[1]} "
-                f"features, but SHAP expects "
-                f"{len(self.feature_names)}."
+                "Feature count mismatch: "
+                f"model input has {X.shape[1]} features, "
+                f"but SHAPEngine expects "
+                f"{len(self.feature_names)} features."
             )
 
-        # -----------------------------------------------------
-        # Calculate SHAP values
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Calculate SHAP values.
+        # ---------------------------------------------------------
 
         shap_result = self.explainer.shap_values(
             X
         )
 
-        # -----------------------------------------------------
-        # Normalize SHAP output
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Normalize SHAP output.
+        # ---------------------------------------------------------
 
         normalized = self._normalize_shap_values(
             shap_result
         )
 
         normalized = np.asarray(
-            normalized
+            normalized,
+            dtype=np.float64
         )
 
-        # -----------------------------------------------------
-        # Make sure normalized result is 2-D
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # We normally explain one current flow.
+        # Use first row if multiple rows are supplied.
+        # ---------------------------------------------------------
 
         if normalized.ndim == 1:
 
-            normalized = normalized.reshape(
-                1,
-                -1
-            )
+            mean_abs_impact = normalized
 
-        if normalized.ndim != 2:
+        else:
 
-            raise ValueError(
-                "Normalized SHAP output has "
-                f"unexpected shape {normalized.shape}"
-            )
-
-        # -----------------------------------------------------
-        # We explain the first/current flow.
-        # -----------------------------------------------------
+            mean_abs_impact = normalized[0]
 
         mean_abs_impact = np.asarray(
-            normalized[0]
+            mean_abs_impact,
+            dtype=np.float64
         ).reshape(-1)
 
-        # -----------------------------------------------------
-        # Verify feature count
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Protect against SHAP returning unexpected feature count.
+        # ---------------------------------------------------------
 
-        if len(mean_abs_impact) != len(
-            self.feature_names
-        ):
-
-            raise ValueError(
-                "SHAP feature count mismatch. "
-                f"SHAP returned "
-                f"{len(mean_abs_impact)} values, "
-                f"but expected "
-                f"{len(self.feature_names)}."
-            )
-
-        # -----------------------------------------------------
-        # Build explanations
-        # -----------------------------------------------------
+        feature_count = min(
+            len(self.feature_names),
+            len(mean_abs_impact)
+        )
 
         explanations = []
 
-        for i, feature_name in enumerate(
-            self.feature_names
-        ):
+        for i in range(feature_count):
 
             value = float(
                 mean_abs_impact[i]
@@ -389,26 +386,23 @@ class SHAPEngine:
 
             explanations.append(
                 {
-                    "feature": feature_name,
+                    "feature": self.feature_names[i],
                     "shap_value": value,
-                    "importance": value,
+                    "importance": value
                 }
             )
 
-        # -----------------------------------------------------
-        # Highest impact first
-        # -----------------------------------------------------
+        # ---------------------------------------------------------
+        # Highest-impact features first.
+        # ---------------------------------------------------------
 
         explanations.sort(
-            key=lambda item: item["shap_value"],
+            key=lambda x: x["shap_value"],
             reverse=True
         )
 
-        # -----------------------------------------------------
-        # Return result
-        # -----------------------------------------------------
-
         return {
             "features": explanations,
-            "top_features": explanations[:5],
+            "top_features": explanations[:5]
         }
+PY
