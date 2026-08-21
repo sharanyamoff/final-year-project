@@ -21,9 +21,10 @@ import {
 import { DeviceInfo } from '../types';
 import { 
   lanDeviceManager, 
-  COMMON_VENDORS, 
   LocalClientInfo 
 } from '../services/lanDeviceManager';
+
+const COMMON_VENDORS = ['Unknown'];
 
 interface HomeLanConfigModalProps {
   isOpen: boolean;
@@ -49,7 +50,7 @@ export const HomeLanConfigModal: React.FC<HomeLanConfigModalProps> = ({
   const [editingIp, setEditingIp] = useState<string | null>(null);
   const [formIp, setFormIp] = useState<string>('');
   const [formName, setFormName] = useState<string>('');
-  const [formVendor, setFormVendor] = useState<string>('Apple, Inc.');
+  const [formVendor, setFormVendor] = useState<string>('Unknown');
   const [formType, setFormType] = useState<DeviceInfo['deviceType']>('Smart Phone');
   const [formOs, setFormOs] = useState<string>('iOS 17.5');
   const [formMac, setFormMac] = useState<string>('');
@@ -96,10 +97,10 @@ export const HomeLanConfigModal: React.FC<HomeLanConfigModalProps> = ({
     setEditingIp(null);
     setFormIp(`${prefix}.${nextOctet}`);
     setFormName('My Home Device');
-    setFormVendor('Apple, Inc.');
+    setFormVendor('Unknown');
     setFormType('Smart Phone');
     setFormOs('iOS 17.5');
-    setFormMac(lanDeviceManager.generateMacForVendor('Apple, Inc.'));
+    setFormMac('00:00:00:00:00:00');
     setFormIsMyDevice(false);
     setFormError('');
     setIsFormOpen(true);
@@ -132,7 +133,7 @@ export const HomeLanConfigModal: React.FC<HomeLanConfigModalProps> = ({
     const lastOctet = formIp.split('.').pop() || '100';
     const updatedDevice: DeviceInfo = {
       ipAddress: formIp.trim(),
-      macAddress: formMac.trim() || lanDeviceManager.generateMacForVendor(formVendor),
+      macAddress: formMac.trim() || '00:00:00:00:00:00',
       vendor: formVendor,
       deviceName: formName.trim(),
       deviceType: formType,
@@ -183,7 +184,7 @@ export const HomeLanConfigModal: React.FC<HomeLanConfigModalProps> = ({
 
     const clientDevice: DeviceInfo = {
       ipAddress: targetIp,
-      macAddress: lanDeviceManager.generateMacForVendor(detectedClient.vendor),
+      macAddress: '00:00:00:00:00:00',
       vendor: detectedClient.vendor,
       deviceName: `${detectedClient.deviceName} (This Device)`,
       deviceType: detectedClient.deviceType,
@@ -580,7 +581,7 @@ export const HomeLanConfigModal: React.FC<HomeLanConfigModalProps> = ({
                     value={formVendor}
                     onChange={(e) => {
                       setFormVendor(e.target.value);
-                      setFormMac(lanDeviceManager.generateMacForVendor(e.target.value));
+                      setFormMac('00:00:00:00:00:00');
                     }}
                     className="w-full bg-white border border-slate-300 rounded px-2.5 py-1.5 text-slate-900 focus:outline-none focus:border-slate-500"
                   >
@@ -628,7 +629,7 @@ export const HomeLanConfigModal: React.FC<HomeLanConfigModalProps> = ({
                     />
                     <button
                       type="button"
-                      onClick={() => setFormMac(lanDeviceManager.generateMacForVendor(formVendor))}
+                      onClick={() => setFormMac('00:00:00:00:00:00')}
                       className="px-2 py-1.5 bg-slate-200 hover:bg-slate-300 rounded text-[11px] font-medium whitespace-nowrap"
                       title="Generate random MAC for vendor"
                     >

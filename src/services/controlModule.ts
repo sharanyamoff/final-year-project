@@ -63,10 +63,7 @@ export class ProcessingControlModule {
     this.timeSeriesData = initialPoints;
 
     // Pre-populate with initial demonstration flow
-    for (let i = 0; i < 5; i++) {
-      const pkt = packetEngine.generateSimulatedPacket(i === 3 ? 'PORT_SCAN' : 'BENIGN');
-      this.processIncomingPacket(pkt);
-    }
+    // Disabled: We are strictly using real packets from the active network interface.
   }
 
   public subscribe(callback: () => void): () => void {
@@ -259,21 +256,50 @@ export class ProcessingControlModule {
   }
 
   // Live Traffic Loop Management
+  private sseSource: EventSource | null = null;
+
   public startTrafficEngine(): void {
-    if (this.intervalTimer) return;
+    if (this.sseSource) return; // Already running
     this.isLiveRunning = true;
-    this.intervalTimer = setInterval(() => {
-      if (this.isLiveRunning) {
-        const pkt = packetEngine.generateSimulatedPacket();
-        this.processIncomingPacket(pkt);
+    
+    this.sseSource = new EventSource('/api/packets/stream');
+    this.sseSource.onmessage = (event) => {
+      if (!this.isLiveRunning) return;
+      
+      try {
+        const pkt = JSON.parse(event.data);
+        
+        const rawPacket: RawPacket = {
+          id: 'pkt_' + Math.random().toString(36).substring(2, 9),
+          timestamp: pkt.timestamp,
+          sourceIp: pkt.sourceIp,
+          destinationIp: pkt.destinationIp,
+          protocol: pkt.protocol as any,
+          sourcePort: pkt.sourcePort || 0,
+          destinationPort: pkt.destinationPort || 0,
+          packetSize: pkt.packetSize,
+          deviceInfo: getDeviceFingerprint(pkt.sourceIp),
+          tcpFlags: pkt.tcpFlags,
+          payloadSummary: pkt.summary,
+          simulatedLabel: 'BENIGN' // default for real packets
+        };
+
+        this.processIncomingPacket(rawPacket);
+      } catch (err) {
+        console.error('Failed to parse real packet from stream:', err);
       }
-    }, this.trafficSpeedMs);
+    };
+    
+    this.sseSource.onerror = (err) => {
+      console.error('SSE Error:', err);
+      this.stopTrafficEngine();
+    };
   }
 
   public stopTrafficEngine(): void {
-    if (this.intervalTimer) {
-      clearInterval(this.intervalTimer);
-      this.intervalTimer = null;
+    if (this.sseSource) {
+      this.sseSource.close();
+      this.sseSource = null;
     }
     this.isLiveRunning = false;
     this.notify();
@@ -298,8 +324,7 @@ export class ProcessingControlModule {
   }
 
   public injectCustomAttack(attackType: AttackType): ProcessedSecurityEvent {
-    const pkt = packetEngine.generateSimulatedPacket(attackType);
-    return this.processIncomingPacket(pkt);
+    throw new Error('Simulation and mock attacks are disabled in real-time mode.');
   }
 
   public injectRawPacket(customPacket: RawPacket): ProcessedSecurityEvent {
@@ -336,10 +361,14 @@ export class ProcessingControlModule {
         existing.lastSeen = Math.max(existing.lastSeen || 0, ev.timestamp);
       } else if (dev) {
         // If not in home registry, track it if it has recent activity
-        devicesMap.set(ev.sourceIp, {
-          ...dev,
-          lastSeen: Math.max(dev.lastSeen || 0, ev.timestamp)
-        });
+        // ONLY if it is on the local subnet!
+        const prefix = lanDeviceManager.getSubnetPrefix();
+        if (prefix && ev.sourceIp.startsWith(prefix)) {
+          devicesMap.set(ev.sourceIp, {
+            ...dev,
+            lastSeen: Math.max(dev.lastSeen || 0, ev.timestamp)
+          });
+        }
       }
     });
 
