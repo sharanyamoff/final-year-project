@@ -235,10 +235,7 @@ def load_models():
         # SHAP
         # ----------------------------------------------------
 
-        shap_engine = SHAPEngine(
-            rf_model,
-            FEATURE_SCHEMA
-        )
+        shap_engine = SHAPEngine(rf_model)
 
         print("SHAP engine loaded successfully.")
 
