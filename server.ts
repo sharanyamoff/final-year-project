@@ -12,7 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const packetEmitter = new EventEmitter();
-let tcpdumpProcess: ChildProcess | null = null;
+let snifferProcess: ChildProcess | null = null;
 let trackedDevices: string[] = [];
 
 function getWifiInfo(): { prefix: string | null; iface: string; hostIp: string | null; hostMac: string | null } {
@@ -45,9 +45,9 @@ function getWifiInfo(): { prefix: string | null; iface: string; hostIp: string |
 }
 
 function startPacketCapture() {
-  if (tcpdumpProcess) {
-    tcpdumpProcess.kill();
-    tcpdumpProcess = null;
+  if (snifferProcess) {
+    snifferProcess.kill();
+    snifferProcess = null;
   }
 
   const { iface } = getWifiInfo();
@@ -58,16 +58,16 @@ function startPacketCapture() {
     filter = trackedDevices.map(ip => `host ${ip}`).join(' or ');
   }
 
-  // Use Python Scapy script instead of tcpdump directly
+  // Use Python Scapy script for packet capture
   const scapyScript = path.join(process.cwd(), 'scapy_sniffer.py');
   const args = ['python3', scapyScript, '-i', iface];
   if (filter) {
     args.push('-f', filter);
   }
 
-  tcpdumpProcess = spawn('sudo', args);
+  snifferProcess = spawn('sudo', args);
   
-  tcpdumpProcess.stdout?.on('data', (data: Buffer) => {
+  snifferProcess.stdout?.on('data', (data: Buffer) => {
     const lines = data.toString().split('\n');
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -87,13 +87,13 @@ function startPacketCapture() {
     }
   });
 
-  tcpdumpProcess.stderr?.on('data', (data) => {
+  snifferProcess.stderr?.on('data', (data) => {
     console.error(`[Scapy Sniffer] ${data}`);
   });
 
-  tcpdumpProcess.on('close', (code) => {
+  snifferProcess.on('close', (code) => {
     console.log(`[Scapy Sniffer] python process exited with code ${code}`);
-    tcpdumpProcess = null;
+    snifferProcess = null;
   });
 
   console.log(`[Packet Capture] Started real-time Scapy python sniffer on ${iface}${filter ? ' with filter' : ''}.`);
@@ -188,10 +188,10 @@ async function startServer() {
         }
       }
       
-      // Update tracked IPs and restart tcpdump filter if needed
+      // Update tracked IPs and restart sniffer filter if needed
       if (newlyTracked.length > 0) {
         trackedDevices = newlyTracked;
-        if (tcpdumpProcess) {
+        if (snifferProcess) {
           startPacketCapture(); // Restart with new filter
         }
       }
