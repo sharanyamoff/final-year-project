@@ -1,14 +1,15 @@
-import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Dict, List
 
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, List, Any
+
 
 # ============================================================
-# PROJECT PATH
+# PATHS
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,52 +18,61 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 ML_ENGINE_DIR = PROJECT_ROOT / "ml_engine"
-MODELS_DIR = ML_ENGINE_DIR / "models"
+ARTIFACT_DIR = ML_ENGINE_DIR / "artifacts"
 
 print("=" * 60)
 print("XRL-IDARS ML ENGINE STARTUP")
 print("=" * 60)
 print("PROJECT_ROOT:", PROJECT_ROOT)
-print("MODELS_DIR:", MODELS_DIR)
+print("ARTIFACT_DIR:", ARTIFACT_DIR)
 
 
 # ============================================================
 # IMPORTS
 # ============================================================
 
-try:
-    from ml_engine.models.dqn_model import DQNAgent
-    print("DQNAgent import: OK")
-except Exception as e:
-    DQNAgent = None
-    print("DQNAgent import failed:", repr(e))
-
-try:
-    from ml_engine.explainability.shap_engine import SHAPEngine
-    print("SHAPEngine import: OK")
-except Exception as e:
-    SHAPEngine = None
-    print("SHAPEngine import failed:", repr(e))
+from ml_engine.models.rf_model import RFModel
+from ml_engine.models.dqn_model import DQNAgent
+from ml_engine.explainability.shap_engine import SHAPEngine
 
 
 # ============================================================
-# GLOBAL MODEL OBJECTS
+# FEATURE SCHEMA
+# ============================================================
+
+FEATURE_NAMES = [
+    "flow_duration_ms",
+    "flow_packets_per_s",
+    "flow_bytes_per_s",
+    "packet_length_mean",
+    "packet_length_std",
+    "syn_count",
+    "ack_count",
+    "rst_count",
+    "fin_count",
+    "syn_ack_ratio",
+]
+
+
+# ============================================================
+# GLOBAL MODELS
 # ============================================================
 
 rf_model = None
-scaler = None
 dqn_agent = None
 shap_engine = None
 lstm_model = None
+scaler = None
 
 models_loaded = False
 
 
 # ============================================================
-# REQUEST SCHEMAS
+# REQUEST
 # ============================================================
 
 class PredictRequest(BaseModel):
+
     flow_id: str = "unknown"
 
     features: Dict[str, float]
@@ -73,168 +83,192 @@ class PredictRequest(BaseModel):
 
 
 # ============================================================
-# MODEL LOADING
+# LOAD MODELS
 # ============================================================
 
 def load_models():
 
     global rf_model
-    global scaler
     global dqn_agent
     global shap_engine
     global lstm_model
+    global scaler
     global models_loaded
 
-    print("\n" + "=" * 60)
+    print()
+    print("=" * 60)
     print("LOADING MODELS")
     print("=" * 60)
 
     # --------------------------------------------------------
-    # Random Forest + scaler
+    # Check artifact directory
     # --------------------------------------------------------
 
-    try:
-        import joblib
+    if not ARTIFACT_DIR.exists():
 
-        rf_path = MODELS_DIR / "rf_model.pkl"
-        scaler_path = MODELS_DIR / "lstm_scaler.pkl"
+        print(
+            "ARTIFACT DIRECTORY DOES NOT EXIST:"
+        )
 
-        if not rf_path.exists():
-            raise FileNotFoundError(
-                f"RF model not found: {rf_path}"
+        print(ARTIFACT_DIR)
+
+        models_loaded = False
+
+        return
+
+
+    # --------------------------------------------------------
+    # Show artifacts
+    # --------------------------------------------------------
+
+    print("Available artifacts:")
+
+    for file in sorted(ARTIFACT_DIR.iterdir()):
+
+        if file.is_file():
+
+            print(
+                "  -",
+                file.name
             )
 
-        rf_artifact = joblib.load(rf_path)
 
-        print("RF artifact type:", type(rf_artifact))
+    # ========================================================
+    # RANDOM FOREST
+    # ========================================================
 
-        # Support both:
-        # 1. direct RandomForestClassifier
-        # 2. {"model": ..., "label_encoder": ...}
-        if isinstance(rf_artifact, dict):
+    try:
 
-            rf_model = rf_artifact.get("model")
+        rf_model = RFModel(
+            str(ARTIFACT_DIR)
+        )
 
-            if rf_model is None:
-                rf_model = rf_artifact.get("rf_model")
+        rf_model.load()
 
-            if rf_model is None:
-                raise ValueError(
-                    "RF artifact does not contain 'model' or 'rf_model'"
-                )
-
-        else:
-            rf_model = rf_artifact
-
-        print("RF model loaded:", type(rf_model))
-
-        if scaler_path.exists():
-            scaler = joblib.load(scaler_path)
-            print("Scaler loaded:", type(scaler))
-        else:
-            print("WARNING: scaler not found:", scaler_path)
+        print(
+            "RF model loaded successfully."
+        )
 
     except Exception as e:
-        print("RF MODEL LOADING FAILED:", repr(e))
+
+        print(
+            "RF MODEL LOADING FAILED:",
+            repr(e)
+        )
+
         rf_model = None
 
 
-    # --------------------------------------------------------
-    # DQN
-    # --------------------------------------------------------
+    # ========================================================
+    # SCALER
+    # ========================================================
 
     try:
 
-        if DQNAgent is None:
-            raise RuntimeError("DQNAgent import failed")
+        import joblib
 
-        dqn_agent = DQNAgent()
+        scaler_path = (
+            ARTIFACT_DIR /
+            "scaler.joblib"
+        )
 
-        # Try common load methods safely
-        loaded = False
+        if scaler_path.exists():
 
-        for method_name in [
-            "load",
-            "load_model",
-            "load_q_table"
-        ]:
+            scaler = joblib.load(
+                scaler_path
+            )
 
-            if hasattr(dqn_agent, method_name):
+            print(
+                "Scaler loaded:",
+                type(scaler)
+            )
 
-                method = getattr(dqn_agent, method_name)
+        else:
 
-                try:
-                    method(str(MODELS_DIR))
-                    loaded = True
-                    print(
-                        f"DQN loaded successfully using {method_name}()"
-                    )
-                    break
-                except Exception as e:
-                    print(
-                        f"DQN {method_name}() failed:",
-                        repr(e)
-                    )
+            print(
+                "WARNING: scaler.joblib missing"
+            )
 
-        if not loaded:
-
-            # Direct q-table fallback
-            import numpy as np
-
-            q_table_path = MODELS_DIR / "q_table.npy"
-
-            if q_table_path.exists():
-
-                q_table = np.load(
-                    q_table_path,
-                    allow_pickle=True
-                )
-
-                if hasattr(dqn_agent, "q_table"):
-                    dqn_agent.q_table = q_table
-                    loaded = True
-
-                print("DQN q_table loaded:", q_table_path)
-
-        if not loaded:
-            print("WARNING: DQN could not be fully loaded")
+            scaler = None
 
     except Exception as e:
-        print("DQN LOADING FAILED:", repr(e))
+
+        print(
+            "SCALER LOADING FAILED:",
+            repr(e)
+        )
+
+        scaler = None
+
+
+    # ========================================================
+    # DQN
+    # ========================================================
+
+    try:
+
+        dqn_agent = DQNAgent(
+            str(ARTIFACT_DIR)
+        )
+
+        dqn_agent.load()
+
+        print(
+            "DQN loaded successfully."
+        )
+
+    except Exception as e:
+
+        print(
+            "DQN LOADING FAILED:",
+            repr(e)
+        )
+
         dqn_agent = None
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # LSTM
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
         from tensorflow.keras.models import load_model
 
-        lstm_candidates = [
-            MODELS_DIR / "intrusion_lstm.keras",
-            MODELS_DIR / "lstm_intrusion_detector.keras",
-            ML_ENGINE_DIR / "lstm_intrusion_model.keras",
+        candidates = [
+
+            ML_ENGINE_DIR /
+            "lstm_intrusion_model.keras",
+
+            ARTIFACT_DIR /
+            "lstm_model.keras",
+
+            ML_ENGINE_DIR /
+            "models" /
+            "intrusion_lstm.keras",
+
+            ML_ENGINE_DIR /
+            "models" /
+            "lstm_intrusion_detector.keras",
+
         ]
 
-        lstm_path = None
+        for path in candidates:
 
-        for candidate in lstm_candidates:
-            if candidate.exists():
-                lstm_path = candidate
+            if path.exists():
+
+                lstm_model = load_model(
+                    str(path)
+                )
+
+                print(
+                    "LSTM model loaded:",
+                    path
+                )
+
                 break
 
-        if lstm_path is not None:
-
-            lstm_model = load_model(str(lstm_path))
-
-            print(
-                "LSTM model loaded:",
-                lstm_path
-            )
-
-        else:
+        if lstm_model is None:
 
             print(
                 "WARNING: LSTM model not found"
@@ -243,79 +277,37 @@ def load_models():
     except Exception as e:
 
         print(
-            "WARNING: LSTM loading failed:",
+            "LSTM LOADING FAILED:",
             repr(e)
         )
 
         lstm_model = None
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # SHAP
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
-        if SHAPEngine is None:
-            raise RuntimeError(
-                "SHAPEngine import failed"
-            )
-
         if rf_model is None:
+
             raise RuntimeError(
                 "RF model must be loaded before SHAP"
             )
 
-        print("Creating ONE global SHAPEngine instance...")
-
-        # IMPORTANT:
-        # Use the same global instance for startup AND /predict.
-
-        shap_engine = SHAPEngine(rf_model)
-
-        print(
-            "SHAPEngine object created:",
-            type(shap_engine)
+        shap_engine = SHAPEngine(
+            str(ARTIFACT_DIR)
         )
 
-        # Call load exactly once if available.
-        if hasattr(shap_engine, "load"):
+        shap_engine.load(
+            rf_model,
+            FEATURE_NAMES
+        )
 
-            try:
-
-                shap_engine.load()
-
-                print(
-                    "SHAP engine loaded successfully."
-                )
-
-            except TypeError:
-
-                # Some implementations expect model/scaler
-                try:
-
-                    shap_engine.load(
-                        rf_model,
-                        scaler
-                    )
-
-                    print(
-                        "SHAP engine loaded successfully "
-                        "with RF + scaler."
-                    )
-
-                except Exception as e:
-
-                    print(
-                        "SHAP load failed:",
-                        repr(e)
-                    )
-
-        else:
-
-            print(
-                "WARNING: SHAPEngine has no load() method"
-            )
+        print(
+            "SHAP engine loaded successfully."
+        )
 
     except Exception as e:
 
@@ -327,77 +319,62 @@ def load_models():
         shap_engine = None
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # FINAL STATUS
-    # --------------------------------------------------------
+    # ========================================================
 
     models_loaded = (
         rf_model is not None
+        and scaler is not None
         and shap_engine is not None
+        and dqn_agent is not None
     )
 
-    print("\n" + "=" * 60)
+    print()
+    print("=" * 60)
 
     if models_loaded:
-        print("ALL REQUIRED MODELS LOADED SUCCESSFULLY")
-    else:
-        print("WARNING: SOME MODELS ARE NOT AVAILABLE")
 
-    print("RF:", rf_model is not None)
-    print("SHAP:", shap_engine is not None)
-    print("DQN:", dqn_agent is not None)
-    print("LSTM:", lstm_model is not None)
+        print(
+            "ALL REQUIRED MODELS LOADED SUCCESSFULLY"
+        )
+
+    else:
+
+        print(
+            "WARNING: SOME REQUIRED MODELS ARE MISSING"
+        )
+
+    print(
+        "RF   :",
+        rf_model is not None
+    )
+
+    print(
+        "Scaler:",
+        scaler is not None
+    )
+
+    print(
+        "SHAP :",
+        shap_engine is not None
+    )
+
+    print(
+        "DQN  :",
+        dqn_agent is not None
+    )
+
+    print(
+        "LSTM :",
+        lstm_model is not None
+    )
 
     print("=" * 60)
 
 
 # ============================================================
-# SHAP PREDICTION
-# ============================================================
-
-def run_shap(features: Dict[str, float]) -> Any:
-
-    global shap_engine
-
-    if shap_engine is None:
-
-        raise RuntimeError(
-            "SHAP engine is not loaded."
-        )
-
-    # IMPORTANT:
-    # The same global object loaded during startup is used here.
-
-    feature_values = list(features.values())
-
-    # Try common SHAPEngine interfaces.
-
-    if hasattr(shap_engine, "explain"):
-
-        return shap_engine.explain(
-            feature_values
-        )
-
-    if hasattr(shap_engine, "predict"):
-
-        return shap_engine.predict(
-            feature_values
-        )
-
-    if hasattr(shap_engine, "shap_values"):
-
-        return shap_engine.shap_values(
-            feature_values
-        )
-
-    raise RuntimeError(
-        "SHAPEngine does not expose "
-        "explain(), predict(), or shap_values()."
-    )
-
-
-# ============================================================
-# FASTAPI LIFESPAN
+# STARTUP
 # ============================================================
 
 @asynccontextmanager
@@ -407,12 +384,10 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    print("Shutting down ML engine...")
+    print(
+        "ML engine shutting down."
+    )
 
-
-# ============================================================
-# FASTAPI APP
-# ============================================================
 
 app = FastAPI(
     title="XRL-IDARS ML Engine",
@@ -429,12 +404,27 @@ app = FastAPI(
 def health():
 
     return {
+
         "status": "ok",
-        "models_loaded": models_loaded,
-        "rf_loaded": rf_model is not None,
-        "shap_loaded": shap_engine is not None,
-        "dqn_loaded": dqn_agent is not None,
-        "lstm_loaded": lstm_model is not None
+
+        "models_loaded":
+            models_loaded,
+
+        "rf_loaded":
+            rf_model is not None,
+
+        "scaler_loaded":
+            scaler is not None,
+
+        "shap_loaded":
+            shap_engine is not None,
+
+        "dqn_loaded":
+            dqn_agent is not None,
+
+        "lstm_loaded":
+            lstm_model is not None,
+
     }
 
 
@@ -443,7 +433,9 @@ def health():
 # ============================================================
 
 @app.post("/predict")
-def predict(request: PredictRequest):
+def predict(
+    request: PredictRequest
+):
 
     if rf_model is None:
 
@@ -452,77 +444,63 @@ def predict(request: PredictRequest):
             detail="RF model is not loaded"
         )
 
-    features = request.features
+    if scaler is None:
+
+        raise HTTPException(
+            status_code=503,
+            detail="Scaler is not loaded"
+        )
+
 
     try:
 
         # ----------------------------------------------------
-        # Prepare features
+        # Create feature vector in correct order
         # ----------------------------------------------------
 
-        feature_values = list(features.values())
+        values = []
 
-        import numpy as np
+        for feature in FEATURE_NAMES:
+
+            if feature not in request.features:
+
+                raise ValueError(
+                    f"Missing feature: {feature}"
+                )
+
+            values.append(
+                request.features[feature]
+            )
+
 
         X = np.asarray(
-            feature_values,
-            dtype=float
-        ).reshape(1, -1)
+            values,
+            dtype=np.float32
+        ).reshape(
+            1,
+            -1
+        )
+
 
         # ----------------------------------------------------
-        # Scaling
+        # Scale
         # ----------------------------------------------------
 
-        X_scaled = X
+        X_scaled = scaler.transform(
+            X
+        )
 
-        if scaler is not None:
-
-            try:
-                X_scaled = scaler.transform(X)
-            except Exception as e:
-
-                print(
-                    "Scaler warning:",
-                    repr(e)
-                )
 
         # ----------------------------------------------------
         # RF prediction
         # ----------------------------------------------------
 
-        prediction = rf_model.predict(
-            X_scaled
+        predicted_class, probabilities, _ = (
+            rf_model.predict(
+                X_scaled
+            )
         )
 
-        predicted_class = prediction[0]
-
-        # ----------------------------------------------------
-        # Probability
-        # ----------------------------------------------------
-
-        confidence = None
-
-        if hasattr(
-            rf_model,
-            "predict_proba"
-        ):
-
-            try:
-
-                probabilities = (
-                    rf_model.predict_proba(X_scaled)
-                )
-
-                confidence = float(
-                    probabilities.max()
-                )
-
-            except Exception as e:
-
-                print(
-                    "Probability warning:",
-                    repr(e)
-                )
 
         # ----------------------------------------------------
         # SHAP
@@ -530,49 +508,130 @@ def predict(request: PredictRequest):
 
         shap_result = None
 
-        try:
+        if shap_engine is not None:
 
-            shap_result = run_shap(
-                features
-            )
+            try:
 
-        except Exception as e:
+                shap_result = (
+                    shap_engine.explain(
+                        X_scaled,
+                        request.features
+                    )
+                )
 
-            print(
-                "SHAP inference failed:",
-                repr(e)
-            )
+            except Exception as e:
 
-            # Do NOT make the whole prediction fail
-            # just because SHAP explanation failed.
+                shap_result = {
+                    "error": str(e)
+                }
 
-            shap_result = {
-                "error": str(e)
-            }
+
+        # ----------------------------------------------------
+        # DQN action
+        # ----------------------------------------------------
+
+        dqn_result = None
+
+        if dqn_agent is not None:
+
+            try:
+
+                state = [
+
+                    float(
+                        max(
+                            probabilities.values()
+                        )
+                    ),
+
+                    0.0,
+
+                    float(
+                        max(
+                            probabilities.values()
+                        )
+                    ),
+
+                    float(
+                        request.features[
+                            "flow_packets_per_s"
+                        ]
+                    ) / 10000.0,
+
+                    float(
+                        request.features[
+                            "syn_count"
+                        ]
+                    ) / 100.0,
+
+                    float(
+                        request.env_state.get(
+                            "historical_incident_count",
+                            0.0
+                        )
+                    ),
+
+                    float(
+                        request.env_state.get(
+                            "is_blocked",
+                            0.0
+                        )
+                    ),
+
+                ]
+
+                state = np.clip(
+                    state,
+                    0.0,
+                    1.0
+                )
+
+                action, q_values = (
+                    dqn_agent.get_action(
+                        state
+                    )
+                )
+
+                dqn_result = {
+
+                    "action": action,
+
+                    "q_values": q_values
+
+                }
+
+            except Exception as e:
+
+                dqn_result = {
+                    "error": str(e)
+                }
+
 
         # ----------------------------------------------------
         # Response
         # ----------------------------------------------------
 
         return {
+
             "status": "success",
-            "flow_id": request.flow_id,
 
-            "prediction": (
-                predicted_class.item()
-                if hasattr(
-                    predicted_class,
-                    "item"
-                )
-                else predicted_class
-            ),
+            "flow_id":
+                request.flow_id,
 
-            "confidence": confidence,
+            "prediction":
+                str(predicted_class),
 
-            "shap": shap_result,
+            "probabilities":
+                probabilities,
 
-            "env_state": request.env_state
+            "shap":
+                shap_result,
+
+            "dqn":
+                dqn_result,
+
         }
+
 
     except Exception as e:
 
@@ -595,6 +654,11 @@ def predict(request: PredictRequest):
 def root():
 
     return {
-        "service": "XRL-IDARS ML Engine",
-        "status": "running"
+
+        "service":
+            "XRL-IDARS ML Engine",
+
+        "status":
+            "running"
+
     }
