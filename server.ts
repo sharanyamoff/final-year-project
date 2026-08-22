@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import os from 'os';
 import { initializeDatabase, checkDatabaseHealth, saveSecurityEventToDb } from './src/services/postgres.js';
-import { initializeInfluxDB, saveTelemetry } from './src/services/influxdb.js';
+import { initializeInfluxDB } from './src/services/influxdb.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);

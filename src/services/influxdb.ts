@@ -17,25 +17,4 @@ export async function initializeInfluxDB(): Promise<void> {
   console.log('[InfluxDB] Connected to xrl_idars');
 }
 
-export async function saveTelemetry(data: {
-  packetsPerSec: number;
-  riskScore: number;
-  attacksCount: number;
-  blockedCount: number;
-  normalCount: number;
-}): Promise<void> {
-  await influx.writePoints([
-    {
-      measurement: 'network_telemetry',
-      fields: {
-        packets_per_sec: Number(data.packetsPerSec),
-        risk_score: Number(data.riskScore),
-        attacks_count: Number(data.attacksCount),
-        blocked_count: Number(data.blockedCount),
-        normal_count: Number(data.normalCount),
-      },
-    },
-  ]);
-}
-
 export default influx;
