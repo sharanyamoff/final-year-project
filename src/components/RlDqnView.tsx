@@ -11,7 +11,6 @@ import {
   TrendingUp,
   Cpu
 } from 'lucide-react';
-import { dqnAgent } from '../services/rlAgent';
 import { controlModule } from '../services/controlModule';
 import { DQNState, ActionType, ProcessedSecurityEvent } from '../types';
 
@@ -20,35 +19,11 @@ interface RlDqnViewProps {
 }
 
 export const RlDqnView: React.FC<RlDqnViewProps> = ({ events }) => {
-  const [stats, setStats] = useState(dqnAgent.getStats());
-  const [trainingMessage, setTrainingMessage] = useState<string>('');
   
   const latestEvent = events.length > 0 ? events[0] : null;
   const dqnData = latestEvent?.realPrediction?.dqn;
 
 
-
-  const handleTrainEpisodes = (count: number) => {
-    let earned = 0;
-    for (let i = 0; i < count; i++) {
-      const randomThreat = Math.random() > 0.4;
-      const r = randomThreat ? 0.7 + Math.random() * 0.3 : 0.05 + Math.random() * 0.25;
-      const s: DQNState = {
-        riskScore: r,
-        topShapImpact: randomThreat ? 0.3 : 0.02,
-        flowVelocity: randomThreat ? 0.8 : 0.1,
-        historicalIncidentCount: randomThreat ? 2 : 0,
-        currentIpStatus: 0
-      };
-      const dec = dqnAgent.selectAction(s);
-      const nextS: DQNState = { ...s, currentIpStatus: dec.action === 'BLOCK' ? 1 : 0 };
-      const reward = dqnAgent.updatePolicy(s, dec.action, r, nextS);
-      earned += reward;
-    }
-    setStats(dqnAgent.getStats());
-    setTrainingMessage(`Successfully executed ${count} reinforcement learning episodes! Cumulative reward updated.`);
-    setTimeout(() => setTrainingMessage(''), 4000);
-  };
 
   return (
     <div className="space-y-6">
@@ -67,62 +42,9 @@ export const RlDqnView: React.FC<RlDqnViewProps> = ({ events }) => {
               Based on base paper <em>M. A. Hossain et al., Elsevier ICT Express (2025)</em>. The RL agent dynamically maps composite risk, SHAP feature impact, and flow history to autonomous actions: <strong>ALLOW (0)</strong>, <strong>ALERT (1)</strong>, or <strong>BLOCK (2)</strong>.
             </p>
           </div>
-
-          {/* Quick RL Training Controls */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => handleTrainEpisodes(50)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium transition shadow-2xs"
-            >
-              <RotateCw className="w-3.5 h-3.5" />
-              <span>Train +50 Episodes</span>
-            </button>
-            <button
-              onClick={() => {
-                dqnAgent.resetEpsilon(0.20);
-                setStats(dqnAgent.getStats());
-              }}
-              className="px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium border border-slate-200 transition"
-            >
-              Reset Exploration (ε)
-            </button>
-          </div>
-        </div>
-
-        {trainingMessage && (
-          <div className="mt-3 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            <span>{trainingMessage}</span>
-          </div>
-        )}
-      </div>
-
-      {/* RL Agent Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <span className="text-xs text-slate-500">Total Learning Episodes</span>
-          <div className="text-2xl font-bold text-slate-900 mt-1 font-mono">{stats.totalEpisodes}</div>
-          <span className="text-[11px] text-slate-400">Bellman TD updates</span>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <span className="text-xs text-slate-500">Cumulative Environmental Reward</span>
-          <div className="text-2xl font-bold text-emerald-700 mt-1 font-mono">+{stats.cumulativeReward} pts</div>
-          <span className="text-[11px] text-slate-400">Optimization metric</span>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <span className="text-xs text-slate-500">Current Exploration Rate (ε)</span>
-          <div className="text-2xl font-bold text-slate-900 mt-1 font-mono">{stats.epsilon}</div>
-          <span className="text-[11px] text-slate-400">ε-greedy policy decay</span>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs">
-          <span className="text-xs text-slate-500">Action Distribution</span>
-          <div className="flex items-center gap-2 text-xs font-mono mt-2">
-            <span className="text-emerald-700 font-semibold">Allow: {stats.totalActionsTaken.ALLOW}</span>
-            <span className="text-amber-700 font-semibold">Alert: {stats.totalActionsTaken.ALERT}</span>
-            <span className="text-rose-700 font-semibold">Block: {stats.totalActionsTaken.BLOCK}</span>
-          </div>
         </div>
       </div>
+
 
       {/* Interactive RL Decision Studio */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

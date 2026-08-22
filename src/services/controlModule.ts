@@ -18,7 +18,6 @@ import {
 } from '../types';
 import { packetEngine, getDeviceFingerprint } from './packetEngine';
 import { lanDeviceManager } from './lanDeviceManager';
-import { dqnAgent } from './rlAgent';
 
 export class ProcessingControlModule {
   private eventsLog: ProcessedSecurityEvent[] = [];
@@ -394,8 +393,6 @@ export class ProcessingControlModule {
 
     const latestPps = this.timeSeriesData[this.timeSeriesData.length - 1]?.packetsPerSec || 32;
 
-    const rlStats = dqnAgent.getStats();
-
     return {
       totalPacketsProcessed: total > 0 ? total * 14 : 124,
       totalAttacksDetected: attacks,
@@ -410,7 +407,12 @@ export class ProcessingControlModule {
         rlDecisionEfficiency: 97.2,
         falsePositiveRate: 1.2
       },
-      rlStats
+      rlStats: {
+        totalEpisodes: 'N/A',
+        cumulativeReward: 'N/A',
+        epsilon: 'N/A',
+        averageQValue: 'N/A'
+      }
     };
   }
 
