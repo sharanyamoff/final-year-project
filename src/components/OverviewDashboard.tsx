@@ -543,7 +543,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                       </td>
                       <td className="p-3 whitespace-nowrap">
                         <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-800 font-mono">
-                          {event.protocol}:{event.rawPacket ? event.rawPacket.destinationPort : event.realFeatures?.destination_port}
+                          {event.protocol}:{event.rawPacket ? event.rawPacket.destinationPort : event.realFlow?.destination_port || 'ANY'}
                         </span>
                       </td>
                       <td className="p-3">

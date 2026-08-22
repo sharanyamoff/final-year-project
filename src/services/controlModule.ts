@@ -44,19 +44,6 @@ export class ProcessingControlModule {
     // Seed initial time-series history
     const now = Date.now();
     const initialPoints: TimeSeriesPoint[] = [];
-    for (let i = 20; i >= 0; i--) {
-      const t = now - i * 3000;
-      const d = new Date(t);
-      initialPoints.push({
-        time: `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`,
-        timestamp: t,
-        packetsPerSec: 25 + Math.floor(Math.random() * 40),
-        riskScore: Math.round((0.08 + Math.random() * 0.15) * 100) / 100,
-        attacksCount: 0,
-        blockedCount: 0,
-        normalCount: 5 + Math.floor(Math.random() * 10)
-      });
-    }
     this.timeSeriesData = initialPoints;
 
     // Pre-populate with initial demonstration flow
@@ -106,6 +93,7 @@ export class ProcessingControlModule {
       attackType: prediction.prediction,
       realPrediction: prediction,
       realFeatures: features,
+      realFlow: combinedEvent.flow,
       actionExecuted,
       isBlocked: isIpBlocked || actionExecuted === 'BLOCK',
       alertDispatched,
@@ -406,7 +394,7 @@ export class ProcessingControlModule {
     const latestPps = this.timeSeriesData[this.timeSeriesData.length - 1]?.packetsPerSec || 32;
 
     return {
-      totalPacketsProcessed: total > 0 ? total * 14 : 124,
+      totalPacketsProcessed: total,
       totalAttacksDetected: attacks,
       totalIpsBlocked: blocked,
       totalAlertsDispatched: alerts,

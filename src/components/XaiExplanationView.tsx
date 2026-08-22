@@ -79,7 +79,7 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
             <div className="flex items-center gap-2">
               <span className="text-sm font-bold text-slate-900 font-mono">{currentEvent.sourceIp}</span>
               <span className="text-xs text-slate-400">→</span>
-              <span className="text-sm font-medium text-slate-700 font-mono">{currentEvent.destinationIp}:{currentEvent.rawPacket.destinationPort}</span>
+              <span className="text-sm font-medium text-slate-700 font-mono">{currentEvent.destinationIp}:{currentEvent.rawPacket?.destinationPort || currentEvent.realFlow?.destination_port || 'ANY'}</span>
               <span className="text-xs px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-800 font-mono">
                 {currentEvent.protocol}
               </span>

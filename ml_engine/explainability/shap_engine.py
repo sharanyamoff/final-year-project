@@ -242,5 +242,5 @@ class SHAPEngine:
 
         return {
             "features": explanations,
-            "top_features": explanations[:5],
+            "top_features": [x["feature"] for x in explanations[:5]],
         }

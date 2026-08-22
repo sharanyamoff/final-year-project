@@ -221,6 +221,7 @@ export interface ProcessedSecurityEvent {
   rlDecision?: DQNDecision; // Legacy
   realPrediction?: RealPredictionResponse; // Real Python API
   realFeatures?: CombinedSecurityEvent['features']; // Real features
+  realFlow?: CombinedSecurityEvent['flow']; // Real flow tuple
   actionExecuted: ActionType;
   isBlocked: boolean;
   alertDispatched: boolean;
