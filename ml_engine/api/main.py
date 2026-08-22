@@ -533,11 +533,19 @@ def predict(
         # Risk Score Calculation
         # ----------------------------------------------------
 
-        max_rf_prob = float(max(probabilities))
+        # Label index 0 is BENIGN.
+        # Therefore total attack probability is the probability
+        # of all non-BENIGN classes.
+        benign_probability = float(probabilities[0])
+        attack_probability = 1.0 - benign_probability
+
         if lstm_status == "EVALUATED":
-            risk_score = 0.6 * max_rf_prob + 0.4 * lstm_score
+            risk_score = (
+                0.6 * attack_probability +
+                0.4 * float(lstm_score)
+            )
         else:
-            risk_score = max_rf_prob
+            risk_score = attack_probability
 
 
         # ----------------------------------------------------
@@ -552,7 +560,7 @@ def predict(
 
                 state = [
 
-                    max_rf_prob,
+                    attack_probability,
 
                     float(lstm_score),
 
