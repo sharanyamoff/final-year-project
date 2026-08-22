@@ -116,6 +116,40 @@ async function startServer() {
     });
   });
 
+  // ML Engine Proxy Endpoints
+  app.get('/api/ml/health', async (req, res) => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/health');
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      res.json(data);
+    } catch (error) {
+      console.error('Error proxying to ML health endpoint:', error);
+      res.status(503).json({ error: 'ML engine unavailable' });
+    }
+  });
+
+  app.post('/api/ml/predict', async (req, res) => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      res.json(data);
+    } catch (error) {
+      console.error('Error proxying to ML predict endpoint:', error);
+      res.status(503).json({ error: 'ML engine unavailable' });
+    }
+  });
+
   // System Architecture metadata endpoint
   app.get('/api/architecture', (req, res) => {
     res.json({

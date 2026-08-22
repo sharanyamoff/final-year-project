@@ -514,8 +514,13 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               ) : (
                 filteredEvents.slice(0, 12).map((event) => {
                   const isAttack = event.attackType !== 'BENIGN';
-                  const topShap = event.xaiExplanation.shapValues[0];
-                  const devInfo = event.flowFeatures.deviceInfo || event.rawPacket.deviceInfo;
+                  const topShapFeature = event.realPrediction?.shap?.features[0];
+                  const devInfo = (event.rawPacket && event.rawPacket.deviceInfo) || undefined;
+                  
+                  const riskScore = event.realPrediction?.risk_score || 0;
+                  const riskLevel = riskScore >= 0.8 ? 'CRITICAL' : riskScore >= 0.6 ? 'HIGH' : riskScore >= 0.35 ? 'MODERATE' : 'LOW';
+                  const mlProb = event.realPrediction?.probabilities ? Math.max(...event.realPrediction.probabilities) : 0;
+                  const dlProb = event.realPrediction?.lstm?.anomaly_score || 0;
 
                   return (
                     <tr
@@ -538,7 +543,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                       </td>
                       <td className="p-3 whitespace-nowrap">
                         <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-800 font-mono">
-                          {event.protocol}:{event.rawPacket.destinationPort}
+                          {event.protocol}:{event.rawPacket ? event.rawPacket.destinationPort : event.realFeatures?.destination_port}
                         </span>
                       </td>
                       <td className="p-3">
@@ -554,32 +559,32 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                         </span>
                       </td>
                       <td className="p-3 font-mono text-slate-700">
-                        {(event.mlResult.attackProbability * 100).toFixed(1)}%
+                        {(mlProb * 100).toFixed(1)}%
                       </td>
                       <td className="p-3 font-mono text-slate-700">
-                        {(event.dlResult.temporalAnomalyScore * 100).toFixed(1)}%
+                        {(dlProb * 100).toFixed(1)}%
                       </td>
                       <td className="p-3">
                         <span
                           className={`font-bold font-mono px-2 py-0.5 rounded border text-xs ${
-                            event.riskScore.level === 'CRITICAL'
+                            riskLevel === 'CRITICAL'
                               ? 'bg-rose-100 text-rose-900 border-rose-300'
-                              : event.riskScore.level === 'HIGH'
+                              : riskLevel === 'HIGH'
                               ? 'bg-amber-100 text-amber-900 border-amber-300'
-                              : event.riskScore.level === 'MODERATE'
+                              : riskLevel === 'MODERATE'
                               ? 'bg-yellow-100 text-yellow-900 border-yellow-300'
                               : 'bg-emerald-100 text-emerald-900 border-emerald-300'
                           }`}
                         >
-                          {(event.riskScore.finalScore * 100).toFixed(0)}%
+                          {(riskScore * 100).toFixed(0)}%
                         </span>
                       </td>
                       <td className="p-3 max-w-xs truncate text-slate-700">
-                        {topShap ? (
+                        {topShapFeature ? (
                           <span className="text-xs">
-                            <strong className="text-slate-900">{topShap.displayName}</strong>: {topShap.actualValue} (
-                            <span className={topShap.shapValue > 0 ? 'text-rose-700 font-medium' : 'text-emerald-700 font-medium'}>
-                              {topShap.shapValue > 0 ? `+${topShap.shapValue.toFixed(2)}` : topShap.shapValue.toFixed(2)}
+                            <strong className="text-slate-900">{topShapFeature.feature}</strong> (
+                            <span className={topShapFeature.shap_value > 0 ? 'text-rose-700 font-medium' : 'text-emerald-700 font-medium'}>
+                              {topShapFeature.shap_value > 0 ? `+${topShapFeature.shap_value.toFixed(4)}` : topShapFeature.shap_value.toFixed(4)}
                             </span>
                             )
                           </span>

@@ -78,88 +78,39 @@ export class ProcessingControlModule {
   }
 
   /**
-   * Main Pipeline Execution Step for every incoming packet
+   * Processes a real prediction event from the Python API
    */
-  public processIncomingPacket(packet: RawPacket): ProcessedSecurityEvent {
-    const isIpBlocked = this.isIpBlocked(packet.sourceIp);
-
-    // 1. Feature Extraction Layer
-    const flowFeatures = packetEngine.extractFlowFeatures(packet);
-
-    // 2. Machine Learning Layer (Random Forest)
-    const mlResult = mlInference.predictRandomForest(flowFeatures);
-
-    // 3. Deep Learning Layer (LSTM Sequence Model)
-    const dlResult = mlInference.predictLSTM(flowFeatures);
-
-    // 4. Unified Risk Scoring Layer
-    const riskScore = mlInference.computeUnifiedRiskScore(mlResult, dlResult, flowFeatures);
-
-    // 5. Explainable AI Layer (SHAP)
-    const xaiExplanation = xaiEngine.computeShapExplanation(flowFeatures, mlResult);
-
-    // 6. Reinforcement Learning Decision Layer (DQN)
-    const currentHistCount = this.ipHistoryCount.get(packet.sourceIp) || 0;
-    const currentState = dqnAgent.encodeState(
-      riskScore,
-      xaiExplanation,
-      flowFeatures,
-      currentHistCount,
-      isIpBlocked
-    );
-
-    const rlDecision = dqnAgent.selectAction(currentState);
-
-    // 7. Action Execution Layer (Automated Response)
-    let actionExecuted: ActionType = rlDecision.action;
+  public processPredictionEvent(combinedEvent: any): ProcessedSecurityEvent {
+    const isIpBlocked = this.isIpBlocked(combinedEvent.flow.source_ip);
+    const prediction = combinedEvent.prediction;
+    const features = combinedEvent.features;
+    
+    // Parse actions from DQN
+    let actionExecuted: ActionType = prediction.dqn ? prediction.dqn.action : 'ALLOW';
     let alertDispatched = false;
-    let alertChannels: ('EMAIL' | 'SMS' | 'WEBHOOK' | 'SOC_DASHBOARD')[] = ['SOC_DASHBOARD'];
+    let alertChannels: ('EMAIL' | 'SMS' | 'WEBHOOK' | 'SOC_DASHBOARD')[] = [];
 
-    if (actionExecuted === 'BLOCK') {
-      this.blockIpAddress(
-        packet.sourceIp,
-        `Autonomous RL Block: ${mlResult.predictedClass} (Risk ${(riskScore.finalScore * 100).toFixed(0)}%, SHAP: ${xaiExplanation.topContributors[0] || 'High Anomaly'})`,
-        'AUTOMATIC_RL'
-      );
+    if (actionExecuted === 'BLOCK' || actionExecuted === 'ALERT') {
       alertDispatched = true;
-      alertChannels = ['SOC_DASHBOARD', 'WEBHOOK', 'EMAIL'];
-    } else if (actionExecuted === 'ALERT') {
-      alertDispatched = true;
-      alertChannels = ['SOC_DASHBOARD', 'WEBHOOK'];
+      alertChannels = ['SOC_DASHBOARD'];
     }
 
-    // 8. Update RL Policy via Environmental Feedback
-    const nextState = dqnAgent.encodeState(
-      riskScore,
-      xaiExplanation,
-      flowFeatures,
-      currentHistCount + (riskScore.finalScore > 0.5 ? 1 : 0),
-      actionExecuted === 'BLOCK'
-    );
-    dqnAgent.updatePolicy(currentState, actionExecuted, riskScore.finalScore, nextState);
-
-    // Update IP History
-    if (riskScore.finalScore > 0.5) {
-      this.ipHistoryCount.set(packet.sourceIp, currentHistCount + 1);
+    const currentHistCount = this.ipHistoryCount.get(combinedEvent.flow.source_ip) || 0;
+    if (prediction.risk_score > 0.5) {
+      this.ipHistoryCount.set(combinedEvent.flow.source_ip, currentHistCount + 1);
     }
 
-    // 9. Construct Security Event
     const event: ProcessedSecurityEvent = {
       id: 'evt_' + Math.random().toString(36).substring(2, 9),
-      timestamp: packet.timestamp,
-      sourceIp: packet.sourceIp,
-      destinationIp: packet.destinationIp,
-      protocol: packet.protocol,
-      attackType: mlResult.predictedClass,
-      rawPacket: packet,
-      flowFeatures,
-      mlResult,
-      dlResult,
-      riskScore,
-      xaiExplanation,
-      rlDecision,
+      timestamp: Date.now(),
+      sourceIp: combinedEvent.flow.source_ip,
+      destinationIp: combinedEvent.flow.destination_ip,
+      protocol: combinedEvent.flow.protocol,
+      attackType: prediction.prediction,
+      realPrediction: prediction,
+      realFeatures: features,
       actionExecuted,
-      isBlocked: this.isIpBlocked(packet.sourceIp),
+      isBlocked: isIpBlocked,
       alertDispatched,
       alertChannels
     };
@@ -173,6 +124,61 @@ export class ProcessingControlModule {
     return event;
   }
 
+  /**
+   * Main Pipeline Execution Step for every incoming packet
+   * (Kept for Attack Simulator, but routes to python backend if enabled)
+   */
+  public async processIncomingPacket(packet: RawPacket): Promise<ProcessedSecurityEvent | null> {
+    const flowFeatures = packetEngine.extractFlowFeatures(packet);
+    
+    // Map to real python features format
+    const pyFeatures = {
+      flow_duration_ms: flowFeatures.connectionDurationMs,
+      flow_packets_per_s: flowFeatures.packetsPerSecond,
+      flow_bytes_per_s: flowFeatures.bytesPerSecond,
+      packet_length_mean: flowFeatures.avgPacketSize,
+      packet_length_std: flowFeatures.packetSizeStdDev,
+      syn_count: packet.tcpFlags?.syn ? 1 : 0, // simplified for simulator
+      ack_count: packet.tcpFlags?.ack ? 1 : 0,
+      rst_count: packet.tcpFlags?.rst ? 1 : 0,
+      fin_count: packet.tcpFlags?.fin ? 1 : 0,
+      syn_ack_ratio: flowFeatures.synToAckRatio
+    };
+
+    try {
+      const response = await fetch('/api/ml/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: flowFeatures.flowId,
+          features: pyFeatures,
+          sequence: Array(5).fill(pyFeatures), // Mock sequence for simulator
+          env_state: { historical_incident_count: 0, is_blocked: 0 }
+        })
+      });
+      
+      if (response.ok) {
+        const prediction = await response.json();
+        return this.processPredictionEvent({
+          type: 'prediction',
+          flow: {
+            source_ip: packet.sourceIp,
+            destination_ip: packet.destinationIp,
+            source_port: packet.sourcePort,
+            destination_port: packet.destinationPort,
+            protocol: packet.protocol
+          },
+          features: pyFeatures,
+          prediction
+        });
+      }
+    } catch (e) {
+      console.error("Failed to process simulated packet through real API:", e);
+    }
+    
+    return null;
+  }
+
   private recordTimeSeriesTelemetry(event: ProcessedSecurityEvent): void {
     const d = new Date(event.timestamp);
     const timeStr = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
@@ -184,23 +190,23 @@ export class ProcessingControlModule {
     if (latest && Math.abs(event.timestamp - latest.timestamp) < 2000) {
       const updatedLatest: TimeSeriesPoint = {
         ...latest,
-        packetsPerSec: Math.round((latest.packetsPerSec + event.flowFeatures.packetsPerSecond) / 2),
-        riskScore: Math.round(((latest.riskScore + event.riskScore.finalScore) / 2) * 100) / 100,
+        packetsPerSec: Math.round((latest.packetsPerSec + (event.realFeatures?.flow_packets_per_s || (event.flowFeatures?.packetsPerSecond || 0))) / 2),
+        riskScore: Math.round(((latest.riskScore + (event.realPrediction?.risk_score || (event.riskScore?.finalScore || 0))) / 2) * 100) / 100,
         attacksCount: isAttack ? latest.attacksCount + 1 : latest.attacksCount,
         blockedCount: isBlocked ? latest.blockedCount + 1 : latest.blockedCount,
         normalCount: !isAttack ? latest.normalCount + 1 : latest.normalCount
       };
       this.timeSeriesData = [...this.timeSeriesData.slice(0, -1), updatedLatest];
     } else {
-      const newPoint: TimeSeriesPoint = {
-        time: timeStr,
-        timestamp: event.timestamp,
-        packetsPerSec: event.flowFeatures.packetsPerSecond,
-        riskScore: event.riskScore.finalScore,
-        attacksCount: isAttack ? 1 : 0,
-        blockedCount: isBlocked ? 1 : 0,
-        normalCount: isAttack ? 0 : 1
-      };
+        const newPoint: TimeSeriesPoint = {
+          time: timeStr,
+          timestamp: event.timestamp,
+          packetsPerSec: event.realFeatures?.flow_packets_per_s || (event.flowFeatures?.packetsPerSecond || 0),
+          riskScore: event.realPrediction?.risk_score || (event.riskScore?.finalScore || 0),
+          attacksCount: isAttack ? 1 : 0,
+          blockedCount: isBlocked ? 1 : 0,
+          normalCount: isAttack ? 0 : 1
+        };
       const updated = [...this.timeSeriesData, newPoint];
       if (updated.length > this.maxTimeSeriesPoints) {
         this.timeSeriesData = updated.slice(updated.length - this.maxTimeSeriesPoints);
@@ -269,22 +275,26 @@ export class ProcessingControlModule {
       try {
         const pkt = JSON.parse(event.data);
         
-        const rawPacket: RawPacket = {
-          id: 'pkt_' + Math.random().toString(36).substring(2, 9),
-          timestamp: pkt.timestamp,
-          sourceIp: pkt.sourceIp,
-          destinationIp: pkt.destinationIp,
-          protocol: pkt.protocol as any,
-          sourcePort: pkt.sourcePort || 0,
-          destinationPort: pkt.destinationPort || 0,
-          packetSize: pkt.packetSize,
-          deviceInfo: getDeviceFingerprint(pkt.sourceIp),
-          tcpFlags: pkt.tcpFlags,
-          payloadSummary: pkt.summary,
-          simulatedLabel: 'BENIGN' // default for real packets
-        };
-
-        this.processIncomingPacket(rawPacket);
+        if (pkt.type === 'prediction') {
+          this.processPredictionEvent(pkt);
+        } else if (pkt.id && pkt.sourceIp) {
+          // If we receive a RawPacket format directly (e.g. from simulator), forward to API
+          const rawPacket: RawPacket = {
+            id: pkt.id || 'pkt_' + Math.random().toString(36).substring(2, 9),
+            timestamp: pkt.timestamp || Date.now(),
+            sourceIp: pkt.sourceIp,
+            destinationIp: pkt.destinationIp,
+            protocol: pkt.protocol as any,
+            sourcePort: pkt.sourcePort || 0,
+            destinationPort: pkt.destinationPort || 0,
+            packetSize: pkt.packetSize || 100,
+            deviceInfo: getDeviceFingerprint(pkt.sourceIp),
+            tcpFlags: pkt.tcpFlags,
+            payloadSummary: pkt.summary,
+            simulatedLabel: 'BENIGN'
+          };
+          this.processIncomingPacket(rawPacket);
+        }
       } catch (err) {
         console.error('Failed to parse real packet from stream:', err);
       }
@@ -327,8 +337,8 @@ export class ProcessingControlModule {
     throw new Error('Simulation and mock attacks are disabled in real-time mode.');
   }
 
-  public injectRawPacket(customPacket: RawPacket): ProcessedSecurityEvent {
-    return this.processIncomingPacket(customPacket);
+  public async injectRawPacket(customPacket: RawPacket): Promise<ProcessedSecurityEvent | null> {
+    return await this.processIncomingPacket(customPacket);
   }
 
   // Getters for Dashboard & Reports
@@ -353,9 +363,8 @@ export class ProcessingControlModule {
       devicesMap.set(d.ipAddress, { ...d });
     });
 
-    // Merge seen packets and update last seen
     this.eventsLog.forEach(ev => {
-      const dev = ev.flowFeatures.deviceInfo || ev.rawPacket.deviceInfo || getDeviceFingerprint(ev.sourceIp);
+      const dev = (ev.rawPacket && ev.rawPacket.deviceInfo) || getDeviceFingerprint(ev.sourceIp);
       if (dev && devicesMap.has(ev.sourceIp)) {
         const existing = devicesMap.get(ev.sourceIp)!;
         existing.lastSeen = Math.max(existing.lastSeen || 0, ev.timestamp);

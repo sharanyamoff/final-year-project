@@ -147,6 +147,64 @@ export interface DQNDecision {
   autonomousConfidence: number;
 }
 
+export interface RealLSTMResult {
+  status: string;
+  anomaly_score: number;
+}
+
+export interface RealSHAPResult {
+  features: {
+    feature: string;
+    shap_value: number;
+    importance: number;
+  }[];
+  top_features: string[];
+}
+
+export interface RealDQNResult {
+  action: ActionType;
+  q_values: {
+    ALLOW: number;
+    ALERT: number;
+    BLOCK: number;
+  };
+}
+
+export interface RealPredictionResponse {
+  status: string;
+  flow_id: string;
+  prediction: AttackType;
+  probabilities: number[];
+  lstm?: RealLSTMResult;
+  risk_score: number;
+  shap?: RealSHAPResult;
+  dqn?: RealDQNResult;
+}
+
+export interface CombinedSecurityEvent {
+  type: string;
+  flow: {
+    source_ip: string;
+    destination_ip: string;
+    source_port: number;
+    destination_port: number;
+    protocol: string;
+  };
+  features: {
+    flow_duration_ms: number;
+    flow_packets_per_s: number;
+    flow_bytes_per_s: number;
+    packet_length_mean: number;
+    packet_length_std: number;
+    syn_count: number;
+    ack_count: number;
+    rst_count: number;
+    fin_count: number;
+    syn_ack_ratio: number;
+  };
+  prediction: RealPredictionResponse;
+}
+
 export interface ProcessedSecurityEvent {
   id: string;
   timestamp: number;
@@ -154,13 +212,15 @@ export interface ProcessedSecurityEvent {
   destinationIp: string;
   protocol: ProtocolType;
   attackType: AttackType;
-  rawPacket: RawPacket;
-  flowFeatures: FlowFeatures;
-  mlResult: MLPrediction;
-  dlResult: DLPrediction;
-  riskScore: UnifiedRiskScore;
-  xaiExplanation: XAIExplanation;
-  rlDecision: DQNDecision;
+  rawPacket?: RawPacket;
+  flowFeatures?: FlowFeatures; // Legacy frontend features
+  mlResult?: MLPrediction; // Legacy
+  dlResult?: DLPrediction; // Legacy
+  riskScore?: UnifiedRiskScore; // Legacy
+  xaiExplanation?: XAIExplanation; // Legacy
+  rlDecision?: DQNDecision; // Legacy
+  realPrediction?: RealPredictionResponse; // Real Python API
+  realFeatures?: CombinedSecurityEvent['features']; // Real features
   actionExecuted: ActionType;
   isBlocked: boolean;
   alertDispatched: boolean;

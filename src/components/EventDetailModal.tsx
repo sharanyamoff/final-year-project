@@ -23,7 +23,10 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
   if (!event) return null;
 
   const isAttack = event.attackType !== 'BENIGN';
-  const dev = event.flowFeatures.deviceInfo || event.rawPacket.deviceInfo;
+  const dev = event.rawPacket?.deviceInfo || undefined;
+  
+  const realPrediction = event.realPrediction;
+  const realFeatures = event.realFeatures;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
@@ -104,11 +107,11 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
                 1 & 2. Raw Ingested Packet (Scapy Layer)
               </span>
               <div className="space-y-1 text-slate-700 font-mono text-[11px]">
-                <div>Source IP: <strong className="text-slate-900">{event.sourceIp}:{event.rawPacket.sourcePort}</strong></div>
-                <div>Destination IP: <strong className="text-slate-900">{event.destinationIp}:{event.rawPacket.destinationPort}</strong></div>
+                <div>Source IP: <strong className="text-slate-900">{event.sourceIp}</strong></div>
+                <div>Destination IP: <strong className="text-slate-900">{event.destinationIp}</strong></div>
                 <div>Protocol: <strong className="text-slate-900">{event.protocol}</strong></div>
-                <div>Packet Size: <strong className="text-slate-900">{event.rawPacket.packetSize} bytes</strong></div>
-                <div>Payload Summary: <span className="text-slate-600 block truncate">{event.rawPacket.payloadSummary}</span></div>
+                <div>Packet Size: <strong className="text-slate-900">{event.rawPacket?.packetSize || realFeatures?.packet_length_mean} bytes</strong></div>
+                <div>Payload Summary: <span className="text-slate-600 block truncate">{event.rawPacket?.payloadSummary || 'N/A'}</span></div>
               </div>
             </div>
 
@@ -118,11 +121,11 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
                 3. Extracted Flow Features
               </span>
               <div className="space-y-1 text-slate-700 font-mono text-[11px]">
-                <div>Packets Per Second: <strong className="text-slate-900">{event.flowFeatures.packetsPerSecond} pps</strong></div>
-                <div>Unique Ports Hit: <strong className="text-slate-900">{event.flowFeatures.uniquePortsAccessed} ports</strong></div>
-                <div>Failed / RST Conns: <strong className="text-slate-900">{event.flowFeatures.failedConnectionsCount}</strong></div>
-                <div>SYN-to-ACK Ratio: <strong className="text-slate-900">{event.flowFeatures.synToAckRatio}:1</strong></div>
-                <div>Duration: <strong className="text-slate-900">{event.flowFeatures.connectionDurationMs} ms</strong></div>
+                <div>Packets Per Second: <strong className="text-slate-900">{realFeatures?.flow_packets_per_s || 0} pps</strong></div>
+                <div>Bytes Per Second: <strong className="text-slate-900">{realFeatures?.flow_bytes_per_s || 0} bps</strong></div>
+                <div>SYN/ACK Count: <strong className="text-slate-900">{realFeatures?.syn_count} / {realFeatures?.ack_count}</strong></div>
+                <div>SYN-to-ACK Ratio: <strong className="text-slate-900">{realFeatures?.syn_ack_ratio}:1</strong></div>
+                <div>Duration: <strong className="text-slate-900">{realFeatures?.flow_duration_ms || 0} ms</strong></div>
               </div>
             </div>
           </div>
@@ -137,25 +140,27 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
               <div className="bg-white p-3 rounded-lg border border-slate-200">
                 <span className="text-slate-500 block mb-0.5 text-[11px]">Random Forest (Static):</span>
                 <div className="text-lg font-bold font-mono text-slate-900">
-                  {(event.mlResult.attackProbability * 100).toFixed(1)}%
+                  {((realPrediction?.probabilities ? Math.max(...realPrediction.probabilities) : 0) * 100).toFixed(1)}%
                 </div>
-                <span className="text-[10px] text-slate-500">{event.mlResult.predictedClass}</span>
+                <span className="text-[10px] text-slate-500">{realPrediction?.prediction || 'BENIGN'}</span>
               </div>
 
               <div className="bg-white p-3 rounded-lg border border-slate-200">
                 <span className="text-slate-500 block mb-0.5 text-[11px]">LSTM Temporal (Sequential):</span>
                 <div className="text-lg font-bold font-mono text-slate-900">
-                  {(event.dlResult.temporalAnomalyScore * 100).toFixed(1)}%
+                  {((realPrediction?.lstm?.anomaly_score || 0) * 100).toFixed(1)}%
                 </div>
-                <span className="text-[10px] text-slate-500">Trend: {event.dlResult.temporalTrend}</span>
+                <span className="text-[10px] text-slate-500">Status: {realPrediction?.lstm?.status || 'N/A'}</span>
               </div>
 
               <div className="bg-white p-3 rounded-lg border border-slate-200">
                 <span className="text-slate-500 block mb-0.5 text-[11px]">Unified Risk Level:</span>
                 <div className="text-lg font-bold font-mono text-rose-600">
-                  {(event.riskScore.finalScore * 100).toFixed(0)}%
+                  {((realPrediction?.risk_score || 0) * 100).toFixed(0)}%
                 </div>
-                <span className="text-[10px] font-bold text-rose-700 font-mono">{event.riskScore.level}</span>
+                <span className="text-[10px] font-bold text-rose-700 font-mono">
+                  {(realPrediction?.risk_score || 0) >= 0.8 ? 'CRITICAL' : (realPrediction?.risk_score || 0) >= 0.6 ? 'HIGH' : 'MODERATE'}
+                </span>
               </div>
             </div>
           </div>
@@ -167,14 +172,14 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
               7. Explainable AI (SHAP Attribution)
             </span>
             <p className="text-slate-800 bg-white p-3 rounded-lg border border-slate-200 text-xs leading-relaxed">
-              {event.xaiExplanation.summaryNarrative}
+              Based on the Python backend SHAP response, top contributing features are mapped below.
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
-              {event.xaiExplanation.shapValues.map((s, idx) => (
+              {realPrediction?.shap?.features.map((s, idx) => (
                 <div key={idx} className="bg-white p-2.5 rounded-lg border border-slate-200 text-[11px] font-mono">
-                  <div className="text-slate-500 text-[10px] truncate">{s.displayName}</div>
-                  <div className={s.shapValue >= 0 ? 'text-rose-700 font-bold' : 'text-emerald-700 font-bold'}>
-                    {s.shapValue >= 0 ? `+${s.shapValue.toFixed(2)}` : s.shapValue.toFixed(2)} φ
+                  <div className="text-slate-500 text-[10px] truncate">{s.feature}</div>
+                  <div className={s.shap_value >= 0 ? 'text-rose-700 font-bold' : 'text-emerald-700 font-bold'}>
+                    {s.shap_value >= 0 ? `+${s.shap_value.toFixed(4)}` : s.shap_value.toFixed(4)}
                   </div>
                 </div>
               ))}
@@ -195,7 +200,7 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
                   event.actionExecuted === 'ALERT' ? 'text-amber-700' :
                   'text-emerald-700'
                 }`}>
-                  {event.actionExecuted} (Q-Allow: {event.rlDecision.qValues.allow.toFixed(1)}, Q-Alert: {event.rlDecision.qValues.alert.toFixed(1)}, Q-Block: {event.rlDecision.qValues.block.toFixed(1)})
+                  {event.actionExecuted} (Q-Allow: {realPrediction?.dqn?.q_values.ALLOW.toFixed(2)}, Q-Alert: {realPrediction?.dqn?.q_values.ALERT.toFixed(2)}, Q-Block: {realPrediction?.dqn?.q_values.BLOCK.toFixed(2)})
                 </span>
               </div>
               <div className="text-right">
