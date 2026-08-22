@@ -6,6 +6,7 @@
  * -> [Database (PostgreSQL & InfluxDB Storage)]
  */
 
+import { saveTelemetry } from './influxdb';
 import {
   ActionType,
   AttackType,
@@ -116,6 +117,22 @@ export class ProcessingControlModule {
     this.eventsLog = [event, ...this.eventsLog.slice(0, this.maxLogs - 1)];
 
     this.recordTimeSeriesTelemetry(event);
+
+    // Persist real-time telemetry to InfluxDB
+    const latestTelemetry = this.timeSeriesData[this.timeSeriesData.length - 1];
+
+    if (latestTelemetry) {
+      saveTelemetry({
+        packetsPerSec: latestTelemetry.packetsPerSec,
+        riskScore: latestTelemetry.riskScore,
+        attacksCount: latestTelemetry.attacksCount,
+        blockedCount: latestTelemetry.blockedCount,
+        normalCount: latestTelemetry.normalCount,
+      }).catch(err => {
+        console.error('[InfluxDB] Failed to save telemetry:', err);
+      });
+    }
+
     this.notify();
 
     // 11. Async persistence to PostgreSQL via Node backend
