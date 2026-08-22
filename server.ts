@@ -46,8 +46,11 @@ function getWifiInfo(): { prefix: string | null; iface: string; hostIp: string |
   return { prefix: null, iface: 'any', hostIp: null, hostMac: null };
 }
 
-function startPacketCapture() {
+function startPacketCapture(forceRestart = false) {
   if (snifferProcess) {
+    if (!forceRestart && !snifferProcess.killed) {
+      return; // Already running
+    }
     snifferProcess.kill();
     snifferProcess = null;
   }
@@ -138,9 +141,23 @@ async function startServer() {
     }
   });
 
+  const telemetryCache = new Set<string>();
+
   app.post('/api/telemetry', async (req, res) => {
     try {
-      await saveTelemetry(req.body);
+      const { flowId, ...telemetryData } = req.body;
+      
+      if (flowId) {
+        if (telemetryCache.has(flowId)) {
+          return res.status(200).json({ status: 'ignored_duplicate' });
+        }
+        telemetryCache.add(flowId);
+        if (telemetryCache.size > 10000) {
+          telemetryCache.clear();
+        }
+      }
+
+      await saveTelemetry(telemetryData as any);
       res.status(201).json({ status: 'success' });
     } catch (err) {
       console.error('[InfluxDB] Failed to save telemetry from API:', err);
@@ -258,7 +275,7 @@ async function startServer() {
       if (newlyTracked.length > 0) {
         trackedDevices = newlyTracked;
         if (snifferProcess) {
-          startPacketCapture(); // Restart with new filter
+          startPacketCapture(true); // Restart with new filter
         }
       }
 
