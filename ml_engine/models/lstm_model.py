@@ -20,14 +20,20 @@ class LSTMWrapper:
         self.model_path = os.path.join(artifact_dir, 'lstm_model.pt')
         self.meta_path = os.path.join(artifact_dir, 'lstm_meta.joblib')
         self.model = None
+        self.timesteps = 5
         
     def load(self):
         if not os.path.exists(self.model_path) or not os.path.exists(self.meta_path):
             raise FileNotFoundError("LSTM artifacts missing")
             
         meta = joblib.load(self.meta_path)
-        self.model = TemporalLSTM(input_dim=meta['input_dim'], hidden_dim=meta['hidden_dim'])
-        self.model.load_state_dict(torch.load(self.model_path))
+        self.timesteps = meta.get('timesteps', 5)
+        self.model = TemporalLSTM(
+            input_dim=meta.get('input_dim', 10),
+            hidden_dim=meta.get('hidden_dim', 64),
+            num_layers=meta.get('num_layers', 2)
+        )
+        self.model.load_state_dict(torch.load(self.model_path, map_location='cpu'))
         self.model.eval()
         return True
         

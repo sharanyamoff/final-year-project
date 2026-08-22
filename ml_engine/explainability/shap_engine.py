@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import shap
 
 
 class SHAPEngine:
@@ -77,6 +76,7 @@ class SHAPEngine:
         if feature_names is not None:
             self.feature_names = list(feature_names)
 
+        import shap
         self.explainer = shap.TreeExplainer(self.model)
 
         return self
@@ -174,6 +174,7 @@ class SHAPEngine:
             )
 
         if self.explainer is None:
+            import shap
             self.explainer = shap.TreeExplainer(self.model)
 
         X = np.asarray(X, dtype=np.float64)

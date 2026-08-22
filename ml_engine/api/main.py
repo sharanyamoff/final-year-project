@@ -34,6 +34,7 @@ print("ARTIFACT_DIR:", ARTIFACT_DIR)
 from ml_engine.models.rf_model import RFModel
 from ml_engine.models.dqn_model import DQNAgent
 from ml_engine.explainability.shap_engine import SHAPEngine
+from ml_engine.models.lstm_model import LSTMWrapper
 
 
 # ============================================================
@@ -233,46 +234,15 @@ def load_models():
 
     try:
 
-        from tensorflow.keras.models import load_model
+        lstm_model = LSTMWrapper(
+            str(ARTIFACT_DIR)
+        )
 
-        candidates = [
+        lstm_model.load()
 
-            ML_ENGINE_DIR /
-            "lstm_intrusion_model.keras",
-
-            ARTIFACT_DIR /
-            "lstm_model.keras",
-
-            ML_ENGINE_DIR /
-            "models" /
-            "intrusion_lstm.keras",
-
-            ML_ENGINE_DIR /
-            "models" /
-            "lstm_intrusion_detector.keras",
-
-        ]
-
-        for path in candidates:
-
-            if path.exists():
-
-                lstm_model = load_model(
-                    str(path)
-                )
-
-                print(
-                    "LSTM model loaded:",
-                    path
-                )
-
-                break
-
-        if lstm_model is None:
-
-            print(
-                "WARNING: LSTM model not found"
-            )
+        print(
+            "LSTM model loaded successfully."
+        )
 
     except Exception as e:
 
@@ -495,11 +465,12 @@ def predict(
         # RF prediction
         # ----------------------------------------------------
 
-        predicted_class, probabilities, _ = (
-            rf_model.predict(
-                X_scaled
-            )
+        rf_result = rf_model.predict(
+            X_scaled
         )
+
+        predicted_class = rf_result.get("prediction", "BENIGN")
+        probabilities = rf_result.get("probabilities", [1.0])
 
 
         # ----------------------------------------------------
@@ -527,6 +498,49 @@ def predict(
 
 
         # ----------------------------------------------------
+        # LSTM Evaluation
+        # ----------------------------------------------------
+
+        lstm_score = 0.0
+        lstm_status = "PENDING"
+        
+        if lstm_model is not None and request.sequence:
+            if len(request.sequence) == lstm_model.timesteps:
+                try:
+                    seq_values = []
+                    for s in request.sequence:
+                        seq_v = []
+                        for feature in FEATURE_NAMES:
+                            if feature not in s:
+                                raise ValueError(f"Missing sequence feature: {feature}")
+                            seq_v.append(s[feature])
+                        seq_values.append(seq_v)
+                        
+                    seq_tensor = np.asarray(seq_values, dtype=np.float32)
+                    seq_scaled = scaler.transform(seq_tensor)
+                    
+                    # Expand dims for batch: (1, timesteps, features)
+                    seq_scaled_batch = np.expand_dims(seq_scaled, axis=0)
+                    
+                    lstm_score = lstm_model.predict(seq_scaled_batch)
+                    lstm_status = "EVALUATED"
+                except Exception as e:
+                    lstm_status = f"ERROR: {e}"
+            else:
+                lstm_status = f"SEQUENCE_LENGTH_MISMATCH (Expected {lstm_model.timesteps}, got {len(request.sequence)})"
+
+        # ----------------------------------------------------
+        # Risk Score Calculation
+        # ----------------------------------------------------
+
+        max_rf_prob = float(max(probabilities))
+        if lstm_status == "EVALUATED":
+            risk_score = 0.6 * max_rf_prob + 0.4 * lstm_score
+        else:
+            risk_score = max_rf_prob
+
+
+        # ----------------------------------------------------
         # DQN action
         # ----------------------------------------------------
 
@@ -538,19 +552,11 @@ def predict(
 
                 state = [
 
-                    float(
-                        max(
-                            probabilities.values()
-                        )
-                    ),
+                    max_rf_prob,
 
-                    0.0,
+                    float(lstm_score),
 
-                    float(
-                        max(
-                            probabilities.values()
-                        )
-                    ),
+                    float(risk_score),
 
                     float(
                         request.features[
@@ -623,6 +629,14 @@ def predict(
 
             "probabilities":
                 probabilities,
+
+            "lstm": {
+                "status": lstm_status,
+                "anomaly_score": float(lstm_score)
+            },
+
+            "risk_score":
+                float(risk_score),
 
             "shap":
                 shap_result,
