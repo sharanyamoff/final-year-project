@@ -211,8 +211,16 @@ async function startServer() {
         // ignore
       }
 
-      // Use arp-scan for active probing rather than stale cache
-      const { stdout } = await execAsync(`sudo arp-scan --interface=${iface} --localnet`);
+      let stdout = '';
+      try {
+        const result = await execAsync(`sudo arp-scan --interface=${iface} --localnet`);
+        stdout = result.stdout;
+      } catch (e) {
+        console.warn('sudo arp-scan failed (probably needs password). Falling back to arp -a cache.');
+        const result = await execAsync(`arp -a`);
+        stdout = result.stdout;
+      }
+
       const lines = stdout.split('\n');
       const devices = [];
       
@@ -230,13 +238,25 @@ async function startServer() {
       }
 
       for (const line of lines) {
-        // Example: 192.168.0.1    00:11:22:33:44:55    Apple, Inc.
-        const match = line.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+([0-9a-fA-F:]+)(?:\s+(.*))?/);
-        if (match) {
-          const ip = match[1];
-          const mac = match[2];
-          const vendor = match[3] || 'Unknown';
-          
+        let ip = null;
+        let mac = null;
+        let vendor = 'Unknown';
+        
+        // Example arp-scan: 192.168.0.1    00:11:22:33:44:55    Apple, Inc.
+        const arpScanMatch = line.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+([0-9a-fA-F:-]+)(?:\s+(.*))?/);
+        // Example arp -a: ? (192.168.0.1) at 00:11:22:33:44:55 [ether] on wlo1
+        const arpCacheMatch = line.match(/\((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)\s+at\s+([0-9a-fA-F:-]+)/);
+
+        if (arpScanMatch) {
+          ip = arpScanMatch[1];
+          mac = arpScanMatch[2];
+          vendor = arpScanMatch[3] || 'Unknown';
+        } else if (arpCacheMatch) {
+          ip = arpCacheMatch[1];
+          mac = arpCacheMatch[2];
+        }
+
+        if (ip && mac) {
           if (prefix && ip.startsWith(prefix) && ip !== hostIp) {
             devices.push({ 
               ip, 
@@ -259,9 +279,15 @@ async function startServer() {
 
       res.json({ devices, prefix, hostIp, gatewayIp });
     } catch (error) {
-      console.error('Error scanning LAN with arp-scan:', error);
-      res.status(500).json({ error: 'Failed to scan LAN devices. Ensure arp-scan is installed and you have sudo privileges.' });
+      console.error('Error scanning LAN:', error);
+      res.status(500).json({ error: 'Failed to scan LAN devices.' });
     }
+  });
+
+  // Internal Packet Ingestion for Standalone Sniffer
+  app.post('/api/internal/packet', (req, res) => {
+    packetEmitter.emit('packet', req.body);
+    res.json({ status: 'ok' });
   });
 
   // Real Packet Stream Endpoint (SSE)

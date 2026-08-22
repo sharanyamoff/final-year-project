@@ -166,12 +166,23 @@ def prediction_worker():
                     "error": str(e)
                 }), flush=True)
 
-            print(json.dumps({
+            packet_payload = {
                 "type": "prediction",
                 "flow": job["flow_info"],
                 "features": job["features"],
                 "prediction": prediction
-            }), flush=True)
+            }
+
+            try:
+                requests.post(
+                    "http://127.0.0.1:3000/api/internal/packet",
+                    json=packet_payload,
+                    timeout=2
+                )
+            except Exception as e:
+                pass # Fail silently for local broadcast
+
+            print(json.dumps(packet_payload), flush=True)
         except requests.exceptions.RequestException as e:
             metrics["prediction_errors"] += 1
             print(json.dumps({
