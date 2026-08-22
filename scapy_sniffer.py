@@ -7,15 +7,43 @@ import time
 import statistics
 import uuid
 from collections import defaultdict
+import threading
+from queue import Queue
 
 import requests
 from scapy.all import sniff, IP, TCP, UDP, ICMP
-
 
 API_URL = "http://127.0.0.1:8000/predict"
 
 WINDOW_SECONDS = 5.0
 
+prediction_queue = Queue()
+
+def prediction_worker():
+    while True:
+        job = prediction_queue.get()
+        if job is None:
+            break
+        try:
+            response = requests.post(
+                API_URL,
+                json=job["payload"],
+                timeout=5
+            )
+            print(json.dumps({
+                "type": "prediction",
+                "flow": job["flow_info"],
+                "features": job["features"],
+                "prediction": response.json()
+            }), flush=True)
+        except requests.exceptions.RequestException as e:
+            print(json.dumps({
+                "type": "prediction_error",
+                "error": str(e)
+            }), flush=True)
+        prediction_queue.task_done()
+
+threading.Thread(target=prediction_worker, daemon=True).start()
 
 flows = defaultdict(lambda: {
     "start_time": None,
@@ -27,7 +55,8 @@ flows = defaultdict(lambda: {
     "fin_count": 0,
     "packets": 0,
     "bytes": 0,
-    "sequence": []
+    "sequence": [],
+    "last_predict_time": 0.0
 })
 
 
@@ -83,7 +112,24 @@ def update_flow(packet):
 
     flow = flows[key]
 
-    if flow["start_time"] is None:
+    if flow["start_time"] is not None and (now - flow["start_time"] >= WINDOW_SECONDS):
+        seq = flow["sequence"]
+        last_predict = flow["last_predict_time"]
+        flow.clear()
+        flow.update({
+            "start_time": now,
+            "last_time": now,
+            "packet_sizes": [],
+            "syn_count": 0,
+            "ack_count": 0,
+            "rst_count": 0,
+            "fin_count": 0,
+            "packets": 0,
+            "bytes": 0,
+            "sequence": seq,
+            "last_predict_time": last_predict
+        })
+    elif flow["start_time"] is None:
         flow["start_time"] = now
 
     flow["last_time"] = now
@@ -192,57 +238,30 @@ def build_sequence(flow):
 def send_prediction(key, flow):
 
     features = build_features(flow)
-
     sequence = build_sequence(flow)
-
     flow_id = str(uuid.uuid4())
 
     payload = {
         "flow_id": flow_id,
-
         "features": features,
-
         "sequence": sequence,
-
         "env_state": {
             "historical_incident_count": 0.0,
             "is_blocked": 0.0
         }
     }
 
-    try:
-
-        response = requests.post(
-            API_URL,
-            json=payload,
-            timeout=10
-        )
-
-        print(
-            json.dumps({
-                "type": "prediction",
-                "flow": {
-                    "source_ip": key[0],
-                    "destination_ip": key[1],
-                    "source_port": key[2],
-                    "destination_port": key[3],
-                    "protocol": key[4]
-                },
-                "features": features,
-                "prediction": response.json()
-            }),
-            flush=True
-        )
-
-    except requests.exceptions.RequestException as e:
-
-        print(
-            json.dumps({
-                "type": "prediction_error",
-                "error": str(e)
-            }),
-            flush=True
-        )
+    prediction_queue.put({
+        "flow_info": {
+            "source_ip": key[0],
+            "destination_ip": key[1],
+            "source_port": key[2],
+            "destination_port": key[3],
+            "protocol": key[4]
+        },
+        "features": features,
+        "payload": payload
+    })
 
 
 def packet_callback(packet):
@@ -258,28 +277,12 @@ def packet_callback(packet):
             return
 
         flow = flows[key]
-
-        # Don't call ML for every packet.
-        # Wait until the flow has some data.
-        if flow["packets"] < 5:
-            return
-
-        # Send prediction every WINDOW_SECONDS.
-        last_prediction = flow.get(
-            "last_prediction",
-            0
-        )
-
         now = time.time()
-
-        if now - last_prediction >= WINDOW_SECONDS:
-
-            send_prediction(
-                key,
-                flow
-            )
-
-            flow["last_prediction"] = now
+        
+        # Rate limit predictions to once per second per flow to avoid ML API overload
+        if now - flow["last_predict_time"] >= 1.0:
+            flow["last_predict_time"] = now
+            send_prediction(key, flow)
 
     except Exception as e:
 
