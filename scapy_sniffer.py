@@ -173,15 +173,19 @@ def update_flow(packet):
 
 
 def build_features(flow):
-    duration = max(
+    raw_duration = (
         (flow["last_time"] or 0) -
-        (flow["start_time"] or 0),
-        0.001
+        (flow["start_time"] or 0)
     )
 
-    packets_per_second = flow["packets"] / duration
-
-    bytes_per_second = flow["bytes"] / duration
+    if flow["packets"] <= 1 or raw_duration <= 0:
+        duration = 0.0
+        packets_per_second = 0.0
+        bytes_per_second = 0.0
+    else:
+        duration = raw_duration
+        packets_per_second = flow["packets"] / duration
+        bytes_per_second = flow["bytes"] / duration
 
     sizes = flow["packet_sizes"]
 
