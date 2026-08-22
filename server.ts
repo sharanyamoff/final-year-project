@@ -141,29 +141,7 @@ async function startServer() {
     }
   });
 
-  const telemetryCache = new Set<string>();
-
-  app.post('/api/telemetry', async (req, res) => {
-    try {
-      const { flowId, ...telemetryData } = req.body;
-      
-      if (flowId) {
-        if (telemetryCache.has(flowId)) {
-          return res.status(200).json({ status: 'ignored_duplicate' });
-        }
-        telemetryCache.add(flowId);
-        if (telemetryCache.size > 10000) {
-          telemetryCache.clear();
-        }
-      }
-
-      await saveTelemetry(telemetryData as any);
-      res.status(201).json({ status: 'success' });
-    } catch (err) {
-      console.error('[InfluxDB] Failed to save telemetry from API:', err);
-      res.status(500).json({ status: 'error', error: 'Failed to save telemetry' });
-    }
-  });
+  // Telemetry is now handled natively by scapy_sniffer.py writing directly to InfluxDB.
 
   // ML Engine Proxy Endpoints
   app.get('/api/ml/health', async (req, res) => {

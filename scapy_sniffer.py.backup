@@ -12,34 +12,9 @@ import threading
 from queue import Queue, Full
 
 import requests
-from influxdb import InfluxDBClient
 from scapy.all import sniff, IP, TCP, UDP, ICMP
 
 API_URL = "http://127.0.0.1:8000/predict"
-
-INFLUX_HOST = "127.0.0.1"
-INFLUX_PORT = 8086
-INFLUX_DATABASE = "xrl_idars"
-
-influx_client = InfluxDBClient(
-    host=INFLUX_HOST,
-    port=INFLUX_PORT,
-    database=INFLUX_DATABASE
-)
-
-try:
-    influx_client.create_database(INFLUX_DATABASE)
-    influx_client.switch_database(INFLUX_DATABASE)
-
-    print(json.dumps({
-        "influxdb": "connected",
-        "database": INFLUX_DATABASE
-    }), flush=True)
-
-except Exception as e:
-    print(json.dumps({
-        "influxdb_error": str(e)
-    }), flush=True)
 
 WINDOW_SECONDS = 5.0
 
@@ -52,42 +27,7 @@ metrics = {
     "predictions_completed": 0,
     "prediction_errors": 0
 }
-
-telemetry = {
-    "attacks_count": 0,
-    "blocked_count": 0,
-    "normal_count": 0,
-    "packets_per_sec": 0.0,
-    "risk_score": 0.0
-}
-
-telemetry_lock = threading.Lock()
-
 last_metric_time = time.time()
-
-def write_telemetry():
-    with telemetry_lock:
-        data = dict(telemetry)
-
-    point = [{
-        "measurement": "network_telemetry",
-        "fields": {
-            "attacks_count": int(data["attacks_count"]),
-            "blocked_count": int(data["blocked_count"]),
-            "normal_count": int(data["normal_count"]),
-            "packets_per_sec": float(data["packets_per_sec"]),
-            "risk_score": float(data["risk_score"])
-        }
-    }]
-
-    try:
-        influx_client.write_points(point)
-
-    except Exception as e:
-        print(json.dumps({
-            "type": "influxdb_write_error",
-            "error": str(e)
-        }), flush=True)
 
 def prediction_worker():
     while True:
@@ -101,49 +41,11 @@ def prediction_worker():
                 timeout=5
             )
             metrics["predictions_completed"] += 1
-
-            prediction = response.json()
-
-            prediction_class = str(
-                prediction.get("prediction", "BENIGN")
-            ).upper()
-
-            risk_score = float(
-                prediction.get("risk_score", 0.0)
-            )
-
-            dqn = prediction.get("dqn") or {}
-
-            action = str(
-                dqn.get("action", "ALLOW")
-            ).upper()
-
-            with telemetry_lock:
-
-                if prediction_class == "BENIGN":
-                    telemetry["normal_count"] += 1
-                else:
-                    telemetry["attacks_count"] += 1
-
-                if action == "BLOCK":
-                    telemetry["blocked_count"] += 1
-
-                telemetry["risk_score"] = risk_score
-
-                telemetry["packets_per_sec"] = float(
-                    job["features"].get(
-                        "flow_packets_per_s",
-                        0.0
-                    )
-                )
-
-            write_telemetry()
-
             print(json.dumps({
                 "type": "prediction",
                 "flow": job["flow_info"],
                 "features": job["features"],
-                "prediction": prediction
+                "prediction": response.json()
             }), flush=True)
         except requests.exceptions.RequestException as e:
             metrics["prediction_errors"] += 1

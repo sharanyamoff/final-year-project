@@ -117,23 +117,7 @@ export class ProcessingControlModule {
 
     this.recordTimeSeriesTelemetry(event);
 
-    // Persist real-time telemetry to InfluxDB via Backend API
-    // Send raw event data, not the UI's 2000ms bucketed data, so InfluxDB can aggregate properly.
-    const isAttack = event.attackType !== 'BENIGN';
-    fetch('/api/telemetry', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        flowId: event.realPrediction?.flow_id || event.id,
-        packetsPerSec: event.realFeatures?.flow_packets_per_s || 0,
-        riskScore: event.realPrediction?.risk_score || 0,
-        attacksCount: isAttack ? 1 : 0,
-        blockedCount: event.isBlocked ? 1 : 0,
-        normalCount: isAttack ? 0 : 1,
-      })
-    }).catch(err => {
-      console.error('[InfluxDB] Failed to save telemetry:', err);
-    });
+    // Telemetry is now handled natively by scapy_sniffer.py directly into InfluxDB.
 
     this.notify();
 
