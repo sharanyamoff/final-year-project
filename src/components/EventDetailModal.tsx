@@ -175,14 +175,20 @@ export const EventDetailModal: React.FC<EventDetailModalProps> = ({ event, onClo
               Based on the Python backend SHAP response, top contributing features are mapped below.
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
-              {realPrediction?.shap?.features.map((s, idx) => (
-                <div key={idx} className="bg-white p-2.5 rounded-lg border border-slate-200 text-[11px] font-mono">
-                  <div className="text-slate-500 text-[10px] truncate">{s.feature}</div>
-                  <div className={s.shap_value >= 0 ? 'text-rose-700 font-bold' : 'text-emerald-700 font-bold'}>
-                    {s.shap_value >= 0 ? `+${s.shap_value.toFixed(4)}` : s.shap_value.toFixed(4)}
+              {realPrediction?.shap?.features.map((s, idx) => {
+                const actualValue = realFeatures ? (realFeatures as any)[s.feature] : undefined;
+                return (
+                  <div key={idx} className="bg-white p-2.5 rounded-lg border border-slate-200 text-[11px] font-mono">
+                    <div className="text-slate-500 text-[10px] truncate">{s.feature}</div>
+                    <div className="text-slate-400 text-[9px] mb-1">
+                      Val: {actualValue !== undefined ? Number(actualValue).toFixed(2) : 'N/A'}
+                    </div>
+                    <div className={s.shap_value >= 0 ? 'text-rose-700 font-bold' : 'text-emerald-700 font-bold'}>
+                      {s.shap_value >= 0 ? `+${s.shap_value.toFixed(4)}` : s.shap_value.toFixed(4)}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

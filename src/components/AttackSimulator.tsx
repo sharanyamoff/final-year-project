@@ -16,8 +16,57 @@ export const AttackSimulator: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState('');
 
   const handleLaunchScenario = (type: AttackType, title: string) => {
-    const event = controlModule.injectCustomAttack(type);
-    setStatusMessage(`Triggered ${title}! Event ID: ${event.id} • Action: ${event.actionExecuted}`);
+    let packetCount = 1;
+    let customSize = 60;
+    let customSyn = false;
+    let customAck = false;
+    let dstPort = 80;
+
+    if (type === 'DOS_SYN_FLOOD') {
+      packetCount = 5;
+      customSyn = true;
+      dstPort = 80;
+    } else if (type === 'PORT_SCAN') {
+      packetCount = 3;
+      customSyn = true;
+      dstPort = 22;
+    } else if (type === 'SSH_BRUTE_FORCE') {
+      packetCount = 4;
+      customSyn = true;
+      customAck = true;
+      dstPort = 22;
+    } else if (type === 'BENIGN') {
+      packetCount = 2;
+      customSyn = true;
+      customAck = true;
+      dstPort = 443;
+      customSize = 1500;
+    }
+
+    for (let i = 0; i < packetCount; i++) {
+      const pkt: RawPacket = {
+        id: 'cust_' + Math.random().toString(36).substring(2, 8),
+        timestamp: Date.now() + i * 50,
+        sourceIp: '192.168.1.100', // standard test IP
+        destinationIp: '192.168.1.10',
+        protocol: 'TCP',
+        sourcePort: 49152 + Math.floor(Math.random() * 10000),
+        destinationPort: dstPort + i,
+        packetSize: customSize,
+        tcpFlags: {
+          syn: customSyn,
+          ack: customAck,
+          fin: false,
+          rst: type === 'SSH_BRUTE_FORCE',
+          psh: true
+        },
+        payloadSummary: `Simulated ${title} payload`,
+        simulatedLabel: type
+      };
+      controlModule.injectRawPacket(pkt);
+    }
+    
+    setStatusMessage(`Triggered ${title} (${packetCount} simulated test packets injected into real ML API)!`);
     setTimeout(() => setStatusMessage(''), 4500);
   };
 

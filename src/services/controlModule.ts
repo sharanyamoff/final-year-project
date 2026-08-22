@@ -77,6 +77,13 @@ export class ProcessingControlModule {
     if (actionExecuted === 'BLOCK' || actionExecuted === 'ALERT') {
       alertDispatched = true;
       alertChannels = ['SOC_DASHBOARD'];
+      if (actionExecuted === 'BLOCK' && !isIpBlocked) {
+        this.blockIpAddress(
+          combinedEvent.flow.source_ip,
+          `Autonomous DQN Block (Risk: ${(prediction.risk_score * 100).toFixed(0)}%)`,
+          'AUTOMATIC_RL'
+        );
+      }
     }
 
     const currentHistCount = this.ipHistoryCount.get(combinedEvent.flow.source_ip) || 0;

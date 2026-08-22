@@ -30,6 +30,64 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
   
   const shapFeatures = realPrediction?.shap?.features || [];
 
+  const generateShapExplanation = () => {
+    if (!shapFeatures || shapFeatures.length === 0) {
+      return "SHAP explanation unavailable for this event.";
+    }
+
+    // Sort by absolute importance to find the most impactful features
+    const sortedFeatures = [...shapFeatures].sort((a, b) => Math.abs(b.shap_value) - Math.abs(a.shap_value));
+    const topFeatures = sortedFeatures.slice(0, 3);
+    
+    if (topFeatures.length === 0) {
+       return "SHAP explanation unavailable for this event.";
+    }
+
+    const parts = topFeatures.map((f, index) => {
+      const isPositive = f.shap_value >= 0;
+      const absVal = Math.abs(f.shap_value);
+      const signStr = f.shap_value >= 0 ? '+' : '';
+      const valStr = `${signStr}${f.shap_value.toFixed(4)}`;
+      
+      let modifier = "slightly";
+      if (absVal > 0.3) modifier = "strongly";
+      else if (absVal > 0.1) modifier = "moderately";
+
+      const action = isPositive ? "increased the attack prediction" : "pushed the prediction toward benign";
+      
+      const actualVal = realFeatures ? (realFeatures as any)[f.feature] : undefined;
+      const actualStr = actualVal !== undefined ? ` (value: ${Number(actualVal).toFixed(2)})` : '';
+      
+      return {
+        feature: f.feature,
+        modifier,
+        action,
+        valStr,
+        actualStr
+      };
+    });
+
+    let explanation = '';
+    
+    if (parts.length > 0) {
+      explanation += `${parts[0].feature}${parts[0].actualStr} ${parts[0].modifier} ${parts[0].action} (${parts[0].valStr})`;
+    }
+    
+    if (parts.length > 1) {
+      const isSameAction = parts[1].action === parts[0].action;
+      const alsoStr = isSameAction ? "also " : "";
+      explanation += `, while ${parts[1].feature}${parts[1].actualStr} ${alsoStr}${parts[1].modifier} ${parts[1].action} (${parts[1].valStr}). `;
+    } else if (parts.length === 1) {
+      explanation += '. ';
+    }
+    
+    if (parts.length > 2) {
+      explanation += `${parts[2].feature}${parts[2].actualStr} ${parts[2].modifier} ${parts[2].action} (${parts[2].valStr}).`;
+    }
+    
+    return explanation.trim();
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Header Card */}
@@ -84,8 +142,10 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
                 {currentEvent.protocol}
               </span>
             </div>
-            <span className="text-xs text-slate-500">
-              Classification: <strong className="text-slate-900">{attackType.replace(/_/g, ' ')}</strong> | Combined Risk: <strong className="text-slate-900 font-mono">{(riskScore * 100).toFixed(0)}%</strong>
+            <span className="text-xs text-slate-500 block mt-1">
+              Random Forest Classification: <strong className="text-slate-900">{attackType.replace(/_/g, ' ')}</strong> | 
+              RF Attack Probability: <strong className="text-slate-900 font-mono">{((realPrediction?.probabilities ? Math.max(...realPrediction.probabilities) : 0) * 100).toFixed(1)}%</strong> | 
+              Combined Risk Score: <strong className="text-slate-900 font-mono">{(riskScore * 100).toFixed(0)}%</strong>
             </span>
           </div>
         </div>
@@ -96,8 +156,8 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
             <Sparkles className="w-3.5 h-3.5 text-slate-800" />
             <span>Root-Cause Explanation (XAI Synthesis)</span>
           </div>
-          <p className="text-slate-700 leading-relaxed">
-            The Python SHAP backend attributes the top behavioral risks to the following features: {realPrediction?.shap?.top_features?.join(', ')}.
+          <p className="text-slate-700 leading-relaxed font-medium">
+            {generateShapExplanation()}
           </p>
         </div>
       </div>
@@ -112,7 +172,7 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
                 SHAP Feature Attribution Waterfall (φ_i)
               </h3>
               <p className="text-xs text-slate-500">
-                Positive values (red) push the model towards ATTACK; negative values (green) push towards BENIGN.
+                Positive values (red) explain how the feature pushed the Random Forest model toward an ATTACK classification; negative values (green) explain how the feature pushed it toward BENIGN.
               </p>
             </div>
             <div className="flex items-center gap-3 text-xs">
