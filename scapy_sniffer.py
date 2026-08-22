@@ -6,9 +6,10 @@ import argparse
 import time
 import statistics
 import uuid
+import fcntl
 from collections import defaultdict
 import threading
-from queue import Queue
+from queue import Queue, Full
 
 import requests
 from scapy.all import sniff, IP, TCP, UDP, ICMP
@@ -17,7 +18,16 @@ API_URL = "http://127.0.0.1:8000/predict"
 
 WINDOW_SECONDS = 5.0
 
-prediction_queue = Queue()
+prediction_queue = Queue(maxsize=100)
+
+metrics = {
+    "packets_seen": 0,
+    "predictions_enqueued": 0,
+    "predictions_dropped": 0,
+    "predictions_completed": 0,
+    "prediction_errors": 0
+}
+last_metric_time = time.time()
 
 def prediction_worker():
     while True:
@@ -30,6 +40,7 @@ def prediction_worker():
                 json=job["payload"],
                 timeout=5
             )
+            metrics["predictions_completed"] += 1
             print(json.dumps({
                 "type": "prediction",
                 "flow": job["flow_info"],
@@ -37,6 +48,7 @@ def prediction_worker():
                 "prediction": response.json()
             }), flush=True)
         except requests.exceptions.RequestException as e:
+            metrics["prediction_errors"] += 1
             print(json.dumps({
                 "type": "prediction_error",
                 "error": str(e)
@@ -255,22 +267,40 @@ def send_prediction(key, flow):
         }
     }
 
-    prediction_queue.put({
-        "flow_info": {
-            "source_ip": key[0],
-            "destination_ip": key[1],
-            "source_port": key[2],
-            "destination_port": key[3],
-            "protocol": key[4]
-        },
-        "features": features,
-        "payload": payload
-    })
+    try:
+        prediction_queue.put_nowait({
+            "flow_info": {
+                "source_ip": key[0],
+                "destination_ip": key[1],
+                "source_port": key[2],
+                "destination_port": key[3],
+                "protocol": key[4]
+            },
+            "features": features,
+            "payload": payload
+        })
+        metrics["predictions_enqueued"] += 1
+    except Full:
+        metrics["predictions_dropped"] += 1
+        print(json.dumps({
+            "type": "queue_full",
+            "message": "Prediction queue is full, dropping prediction job."
+        }), flush=True)
 
 
 def packet_callback(packet):
-
+    global last_metric_time
+    
     try:
+        metrics["packets_seen"] += 1
+
+        now = time.time()
+        if now - last_metric_time >= 10.0:
+            last_metric_time = now
+            print(json.dumps({
+                "type": "metrics",
+                "metrics": metrics
+            }), flush=True)
 
         if IP not in packet:
             return
@@ -300,6 +330,13 @@ def packet_callback(packet):
 
 
 def main():
+    
+    lock_file = open("/tmp/xrl_idars_sniffer.lock", "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("ERROR: Another scapy_sniffer instance is already running.")
+        sys.exit(1)
 
     parser = argparse.ArgumentParser(
         description="XRL-IDARS Scapy Live Sniffer"
