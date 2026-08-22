@@ -254,10 +254,10 @@ export interface SystemMetrics {
     falsePositiveRate: number;
   };
   rlStats: {
-    totalEpisodes: number;
-    cumulativeReward: number;
-    epsilon: number;
-    averageQValue: number;
+    totalEpisodes: number | string;
+    cumulativeReward: number | string;
+    epsilon: number | string;
+    averageQValue: number | string;
   };
 }
 
