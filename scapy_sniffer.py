@@ -72,9 +72,9 @@ def write_telemetry():
     point = [{
         "measurement": "network_telemetry",
         "fields": {
-            "attacks_count": int(data["attacks_count"]),
-            "blocked_count": int(data["blocked_count"]),
-            "normal_count": int(data["normal_count"]),
+            "attacks_count": float(data["attacks_count"]),
+            "blocked_count": float(data["blocked_count"]),
+            "normal_count": float(data["normal_count"]),
             "packets_per_sec": float(data["packets_per_sec"]),
             "risk_score": float(data["risk_score"])
         }
