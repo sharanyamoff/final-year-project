@@ -6,6 +6,7 @@ import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import os from 'os';
+import { initializeDatabase, checkDatabaseHealth, saveSecurityEventToDb } from './src/services/postgres.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -114,6 +115,26 @@ async function startServer() {
       institution: 'VTU - JSS Academy of Technical Education, Bengaluru',
       timestamp: new Date().toISOString()
     });
+  });
+
+  // PostgreSQL Database Endpoints
+  app.get('/api/database/health', async (req, res) => {
+    const isHealthy = await checkDatabaseHealth();
+    if (isHealthy) {
+      res.json({ status: 'ok', database: process.env.PGDATABASE || 'xrl_idars' });
+    } else {
+      res.status(500).json({ status: 'error', error: 'Database connection failed' });
+    }
+  });
+
+  app.post('/api/db/events', async (req, res) => {
+    try {
+      await saveSecurityEventToDb(req.body);
+      res.status(201).json({ status: 'success' });
+    } catch (err) {
+      // Don't crash on DB error, just log it. The frontend handles errors gracefully.
+      res.status(500).json({ status: 'error', error: 'Failed to save event' });
+    }
   });
 
   // ML Engine Proxy Endpoints
@@ -276,4 +297,7 @@ async function startServer() {
   });
 }
 
-startServer();
+// Initialize PostgreSQL Schema and Start Server
+initializeDatabase().then(() => {
+  startServer();
+});

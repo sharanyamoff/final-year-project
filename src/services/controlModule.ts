@@ -118,6 +118,15 @@ export class ProcessingControlModule {
     this.recordTimeSeriesTelemetry(event);
     this.notify();
 
+    // 11. Async persistence to PostgreSQL via Node backend
+    fetch('/api/db/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
+    }).catch(err => {
+      console.error('[Frontend] Failed to persist security event to backend:', err);
+    });
+
     return event;
   }
 
