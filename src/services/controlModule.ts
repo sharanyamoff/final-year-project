@@ -18,8 +18,6 @@ import {
 } from '../types';
 import { packetEngine, getDeviceFingerprint } from './packetEngine';
 import { lanDeviceManager } from './lanDeviceManager';
-import { mlInference } from './mlModels';
-import { xaiEngine } from './xaiEngine';
 import { dqnAgent } from './rlAgent';
 
 export class ProcessingControlModule {
