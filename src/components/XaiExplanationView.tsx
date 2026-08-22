@@ -23,8 +23,12 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
     );
   }
 
-  const { xaiExplanation, mlResult, flowFeatures, riskScore, attackType } = currentEvent;
+  const { realPrediction, realFeatures } = currentEvent;
+  const attackType = realPrediction?.prediction || 'BENIGN';
+  const riskScore = realPrediction?.risk_score || 0;
   const isAttack = attackType !== 'BENIGN';
+  
+  const shapFeatures = realPrediction?.shap?.features || [];
 
   return (
     <div className="space-y-6">
@@ -81,7 +85,7 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
               </span>
             </div>
             <span className="text-xs text-slate-500">
-              Classification: <strong className="text-slate-900">{attackType.replace(/_/g, ' ')}</strong> | Combined Risk: <strong className="text-slate-900 font-mono">{(riskScore.finalScore * 100).toFixed(0)}%</strong>
+              Classification: <strong className="text-slate-900">{attackType.replace(/_/g, ' ')}</strong> | Combined Risk: <strong className="text-slate-900 font-mono">{(riskScore * 100).toFixed(0)}%</strong>
             </span>
           </div>
         </div>
@@ -92,7 +96,9 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
             <Sparkles className="w-3.5 h-3.5 text-slate-800" />
             <span>Root-Cause Explanation (XAI Synthesis)</span>
           </div>
-          <p className="text-slate-700 leading-relaxed">{xaiExplanation.summaryNarrative}</p>
+          <p className="text-slate-700 leading-relaxed">
+            The Python SHAP backend attributes the top behavioral risks to the following features: {realPrediction?.shap?.top_features?.join(', ')}.
+          </p>
         </div>
       </div>
 
@@ -121,22 +127,26 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
 
           {/* Waterfall Bars */}
           <div className="space-y-3.5 pt-2">
-            {xaiExplanation.shapValues.map((shap, index) => {
-              const isPositive = shap.shapValue >= 0;
-              const absVal = Math.abs(shap.shapValue);
-              const percentage = Math.min(100, Math.round(absVal * 200)); // normalized visual scale
+            {shapFeatures.map((shap, index) => {
+              const isPositive = shap.shap_value >= 0;
+              const absVal = Math.abs(shap.shap_value);
+              const percentage = Math.min(100, Math.round(absVal * 1000)); // normalized visual scale for small shap values
+
+              // Try to map to realFeatures if available to show actual values
+              const featureKey = shap.feature;
+              const actualValue = realFeatures ? (realFeatures as any)[featureKey] : 'N/A';
 
               return (
                 <div key={index} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-slate-900">{shap.displayName}</span>
+                      <span className="font-semibold text-slate-900">{shap.feature}</span>
                       <span className="text-slate-500 font-mono text-[11px]">
-                        (Actual: <strong className="text-slate-800">{shap.actualValue}</strong>, Baseline: {shap.baselineValue} {shap.unit})
+                        (Actual: <strong className="text-slate-800">{actualValue !== undefined ? Number(actualValue).toFixed(2) : 'N/A'}</strong>)
                       </span>
                     </div>
                     <span className={`font-mono font-bold ${isPositive ? 'text-rose-700' : 'text-emerald-700'}`}>
-                      {isPositive ? `+${shap.shapValue.toFixed(2)}` : shap.shapValue.toFixed(2)} φ
+                      {isPositive ? `+${shap.shap_value.toFixed(4)}` : shap.shap_value.toFixed(4)} φ
                     </span>
                   </div>
 
@@ -169,7 +179,7 @@ export const XaiExplanationView: React.FC<XaiExplanationViewProps> = ({
           {/* Shapley Equation Reference */}
           <div className="mt-4 bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-600 flex items-center justify-between">
             <span>
-              Baseline E[f(x)] = <strong className="text-slate-900">{(xaiExplanation.baseValue * 100).toFixed(1)}%</strong> → Σ φ_i = <strong className={isAttack ? 'text-rose-700' : 'text-emerald-700'}>{xaiExplanation.shapValues.reduce((a, b) => a + b.shapValue, 0) > 0 ? '+' : ''}{xaiExplanation.shapValues.reduce((a, b) => a + b.shapValue, 0).toFixed(2)}</strong> → Final Prediction f(x) = <strong className="text-slate-900">{(xaiExplanation.predictedValue * 100).toFixed(1)}%</strong>
+              Σ φ_i (Total Feature Impact) = <strong className={isAttack ? 'text-rose-700' : 'text-emerald-700'}>{shapFeatures.reduce((a, b) => a + b.shap_value, 0) > 0 ? '+' : ''}{shapFeatures.reduce((a, b) => a + b.shap_value, 0).toFixed(4)}</strong> → RF Attack Probability = <strong className="text-slate-900">{(realPrediction?.probabilities ? Math.max(...realPrediction.probabilities) * 100 : 0).toFixed(1)}%</strong>
             </span>
           </div>
         </div>
