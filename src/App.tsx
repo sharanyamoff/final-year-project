@@ -67,7 +67,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'models' && <ModelPipelineView />}
+        {activeTab === 'models' && <ModelPipelineView events={events} />}
 
         {activeTab === 'xai' && (
           <XaiExplanationView
@@ -77,7 +77,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'rl' && <RlDqnView />}
+        {activeTab === 'rl' && <RlDqnView events={events} />}
 
         {activeTab === 'firewall' && (
           <FirewallActionView
