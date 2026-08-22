@@ -2,39 +2,26 @@ import React, { useState } from 'react';
 import { Cpu, Brain, Layers, Sliders, CheckCircle2, TrendingUp, Zap, Sparkles } from 'lucide-react';
 import { mlInference } from '../services/mlModels';
 import { packetEngine } from '../services/packetEngine';
-import { FlowFeatures } from '../types';
+import { ProcessedSecurityEvent } from '../types';
 
-export const ModelPipelineView: React.FC = () => {
-  // Interactive sandbox flow state
-  const [pps, setPps] = useState<number>(380);
-  const [ports, setPorts] = useState<number>(14);
-  const [failedConns, setFailedConns] = useState<number>(7);
-  const [synAckRatio, setSynAckRatio] = useState<number>(6.5);
-  const [packetSize, setPacketSize] = useState<number>(60);
-  const [duration, setDuration] = useState<number>(1200);
+interface ModelPipelineViewProps {
+  events: ProcessedSecurityEvent[];
+}
 
-  // Generate synthetic flow features based on sliders
-  const testFlow: FlowFeatures = {
-    flowId: 'sandbox_test_flow',
-    sourceIp: '192.168.1.199',
-    destinationIp: '192.168.1.10',
-    windowStartTime: Date.now() - duration,
-    windowEndTime: Date.now(),
-    packetsPerSecond: pps,
-    bytesPerSecond: pps * packetSize,
-    uniquePortsAccessed: ports,
-    avgPacketSize: packetSize,
-    packetSizeStdDev: 12.4,
-    connectionDurationMs: duration,
-    failedConnectionsCount: failedConns,
-    synToAckRatio: synAckRatio,
-    distinctProtocolsCount: 2,
-    flowEntropy: Math.min(1.0, (ports * 0.1) + 0.1)
-  };
-
-  const rfResult = mlInference.predictRandomForest(testFlow);
-  const lstmResult = mlInference.predictLSTM(testFlow);
-  const riskResult = mlInference.computeUnifiedRiskScore(rfResult, lstmResult, testFlow);
+export const ModelPipelineView: React.FC<ModelPipelineViewProps> = ({ events }) => {
+  const latestEvent = events.length > 0 ? events[0] : null;
+  const realFeatures = latestEvent?.realFeatures;
+  const rfProb = latestEvent?.realPrediction?.probabilities ? Math.max(...latestEvent.realPrediction.probabilities) : 0;
+  const lstmProb = latestEvent?.realPrediction?.lstm?.anomaly_score || 0;
+  const riskScore = latestEvent?.realPrediction?.risk_score || 0;
+  const classProbabilities = latestEvent?.realPrediction?.probabilities || [0, 0, 0, 0];
+  
+  // Assuming probabilities array maps to: ['BENIGN', 'DOS_SYN_FLOOD', 'PORT_SCAN', 'BRUTE_FORCE'] based on standard mapping
+  const classNames = ['BENIGN', 'DOS_SYN_FLOOD', 'PORT_SCAN', 'BRUTE_FORCE'];
+  const probMap: Record<string, number> = {};
+  classProbabilities.forEach((p, idx) => {
+    probMap[classNames[idx] || `Class_${idx}`] = p;
+  });
 
   return (
     <div className="space-y-6">
@@ -68,170 +55,60 @@ export const ModelPipelineView: React.FC = () => {
 
       {/* Model Sandbox & Live Evaluator */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Col: Interactive Feature Parameter Controls */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Sliders className="w-4 h-4 text-slate-900" />
-              Flow Feature Sandbox
+              Latest Flow Features
             </h3>
-            <button
-              onClick={() => {
-                setPps(22);
-                setPorts(1);
-                setFailedConns(0);
-                setSynAckRatio(1.0);
-                setPacketSize(650);
-                setDuration(3200);
-              }}
-              className="text-[11px] text-slate-600 hover:text-slate-900 transition font-medium"
-            >
-              Reset Normal
-            </button>
           </div>
 
-          {/* Slider 1: Packets Per Second */}
           <div>
             <div className="flex justify-between text-xs mb-1">
               <span className="text-slate-700 font-medium">Packets Per Second (PPS)</span>
-              <span className="font-mono text-slate-900 font-bold">{pps} pps</span>
+              <span className="font-mono text-slate-900 font-bold">{realFeatures?.flow_packets_per_s.toFixed(2) || 0} pps</span>
             </div>
-            <input
-              type="range"
-              min="1"
-              max="800"
-              value={pps}
-              onChange={(e) => setPps(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
-            <span className="text-[10px] text-slate-500">Normal LAN: 5-30 | Flooding: &gt; 250</span>
           </div>
 
-          {/* Slider 2: Unique Ports Accessed */}
           <div>
             <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-700 font-medium">Unique Ports Accessed</span>
-              <span className="font-mono text-slate-900 font-bold">{ports} ports</span>
+              <span className="text-slate-700 font-medium">Bytes Per Second (BPS)</span>
+              <span className="font-mono text-slate-900 font-bold">{realFeatures?.flow_bytes_per_s.toFixed(2) || 0} bps</span>
             </div>
-            <input
-              type="range"
-              min="1"
-              max="40"
-              value={ports}
-              onChange={(e) => setPorts(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
-            <span className="text-[10px] text-slate-500">Normal: 1-2 | Port Scanning: &gt; 8</span>
           </div>
 
-          {/* Slider 3: Failed Connections */}
           <div>
             <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-700 font-medium">Failed Connections / RSTs</span>
-              <span className="font-mono text-rose-600 font-bold">{failedConns} failed</span>
+              <span className="text-slate-700 font-medium">SYN/ACK Count</span>
+              <span className="font-mono text-slate-900 font-bold">{realFeatures?.syn_count || 0} / {realFeatures?.ack_count || 0}</span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="20"
-              value={failedConns}
-              onChange={(e) => setFailedConns(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
-            <span className="text-[10px] text-slate-500">Normal: 0 | Brute Force: &gt; 5</span>
           </div>
 
-          {/* Slider 4: SYN-to-ACK Ratio */}
           <div>
             <div className="flex justify-between text-xs mb-1">
               <span className="text-slate-700 font-medium">SYN-to-ACK Ratio</span>
-              <span className="font-mono text-slate-900 font-bold">{synAckRatio.toFixed(1)}:1</span>
+              <span className="font-mono text-slate-900 font-bold">{(realFeatures?.syn_ack_ratio || 0).toFixed(1)}:1</span>
             </div>
-            <input
-              type="range"
-              min="0.5"
-              max="15.0"
-              step="0.5"
-              value={synAckRatio}
-              onChange={(e) => setSynAckRatio(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
-            <span className="text-[10px] text-slate-500">Normal: ~1.0 | SYN Flood: &gt; 4.0</span>
           </div>
 
-          {/* Slider 5: Average Packet Size */}
           <div>
             <div className="flex justify-between text-xs mb-1">
               <span className="text-slate-700 font-medium">Avg Packet Size (Bytes)</span>
-              <span className="font-mono text-slate-900 font-bold">{packetSize} B</span>
+              <span className="font-mono text-slate-900 font-bold">{realFeatures?.packet_length_mean.toFixed(2) || 0} B</span>
             </div>
-            <input
-              type="range"
-              min="40"
-              max="1500"
-              value={packetSize}
-              onChange={(e) => setPacketSize(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
+          </div>
+          
+          <div>
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-700 font-medium">Duration (ms)</span>
+              <span className="font-mono text-slate-900 font-bold">{realFeatures?.flow_duration_ms.toFixed(2) || 0} ms</span>
+            </div>
           </div>
 
-          {/* Quick Presets */}
           <div className="pt-2 border-t border-slate-100">
-            <span className="text-[11px] text-slate-500 block mb-2 font-semibold">Preset Attack Scenarios:</span>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                onClick={() => {
-                  setPps(620);
-                  setPorts(1);
-                  setFailedConns(2);
-                  setSynAckRatio(12.0);
-                  setPacketSize(60);
-                  setDuration(800);
-                }}
-                className="p-2 rounded bg-slate-50 hover:bg-slate-100 text-slate-900 border border-slate-200 text-left font-medium transition"
-              >
-                ⚡ DoS SYN Flood
-              </button>
-              <button
-                onClick={() => {
-                  setPps(140);
-                  setPorts(28);
-                  setFailedConns(4);
-                  setSynAckRatio(3.5);
-                  setPacketSize(44);
-                  setDuration(1500);
-                }}
-                className="p-2 rounded bg-slate-50 hover:bg-slate-100 text-slate-900 border border-slate-200 text-left font-medium transition"
-              >
-                🔍 Nmap Port Scan
-              </button>
-              <button
-                onClick={() => {
-                  setPps(80);
-                  setPorts(1);
-                  setFailedConns(14);
-                  setSynAckRatio(1.2);
-                  setPacketSize(320);
-                  setDuration(4000);
-                }}
-                className="p-2 rounded bg-slate-50 hover:bg-slate-100 text-slate-900 border border-slate-200 text-left font-medium transition"
-              >
-                🔑 SSH Brute Force
-              </button>
-              <button
-                onClick={() => {
-                  setPps(18);
-                  setPorts(1);
-                  setFailedConns(0);
-                  setSynAckRatio(1.0);
-                  setPacketSize(850);
-                  setDuration(3500);
-                }}
-                className="p-2 rounded bg-slate-50 hover:bg-slate-100 text-slate-900 border border-slate-200 text-left font-medium transition"
-              >
-                🌐 Campus Browsing
-              </button>
-            </div>
+            <span className="text-[11px] text-slate-500 block font-semibold">
+              Currently analyzing live traffic from network interface. Make sure the ML Backend is running and producing packets.
+            </span>
           </div>
         </div>
 
@@ -263,22 +140,21 @@ export const ModelPipelineView: React.FC = () => {
                 <span className="text-xs text-slate-500 block mb-1">Attack Probability (P_RF)</span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-bold font-mono text-slate-900">
-                    {(rfResult.attackProbability * 100).toFixed(1)}%
+                    {(rfProb * 100).toFixed(1)}%
                   </span>
                   <span className="text-xs text-slate-500">confidence</span>
                 </div>
                 <div className="mt-2 flex items-center gap-2 text-xs">
                   <span className="text-slate-500">Class:</span>
                   <span className="px-2 py-0.5 rounded bg-slate-900 text-white font-semibold font-mono">
-                    {rfResult.predictedClass}
+                    {latestEvent?.realPrediction?.prediction || 'BENIGN'}
                   </span>
                 </div>
               </div>
 
-              {/* Class Probability Breakdown */}
               <div className="space-y-1.5 text-xs">
                 <span className="text-slate-500 block font-semibold">Multiclass Ensemble Vote:</span>
-                {Object.entries(rfResult.classProbabilities).map(([cls, prob]) => (
+                {Object.entries(probMap).map(([cls, prob]) => (
                   <div key={cls} className="flex items-center justify-between">
                     <span className="text-slate-600">{cls.replace(/_/g, ' ')}</span>
                     <div className="flex items-center gap-2">
@@ -324,14 +200,14 @@ export const ModelPipelineView: React.FC = () => {
                 <span className="text-xs text-slate-500 block mb-1">Temporal Behavior Score (P_LSTM)</span>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-bold font-mono text-slate-900">
-                    {(lstmResult.temporalAnomalyScore * 100).toFixed(1)}%
+                    {(lstmProb * 100).toFixed(1)}%
                   </span>
                   <span className="text-xs text-slate-500">anomaly index</span>
                 </div>
                 <div className="mt-2 flex items-center gap-2 text-xs">
-                  <span className="text-slate-500">Temporal Trend:</span>
+                  <span className="text-slate-500">Status:</span>
                   <span className="px-2 py-0.5 rounded bg-slate-900 text-white font-semibold font-mono">
-                    {lstmResult.temporalTrend}
+                    {latestEvent?.realPrediction?.lstm?.status || 'N/A'}
                   </span>
                 </div>
               </div>
@@ -339,16 +215,12 @@ export const ModelPipelineView: React.FC = () => {
               <div className="space-y-2 text-xs text-slate-700">
                 <div className="flex justify-between py-1 border-b border-slate-200">
                   <span className="text-slate-500">Sequence Window Length (T):</span>
-                  <span className="font-mono font-semibold text-slate-900">{lstmResult.sequenceLength} / 5 slices</span>
+                  <span className="font-mono font-semibold text-slate-900">5 slices</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-200">
-                  <span className="text-slate-500">Hidden State Norm ||h_t||:</span>
-                  <span className="font-mono font-semibold text-slate-900">{lstmResult.hiddenStateNorm}</span>
-                </div>
-                <div className="flex justify-between py-1">
                   <span className="text-slate-500">Abnormal Pattern Trigger:</span>
-                  <span className={`font-mono font-bold ${lstmResult.abnormalPatternDetected ? 'text-rose-600' : 'text-emerald-600'}`}>
-                    {lstmResult.abnormalPatternDetected ? 'DETECTED' : 'NORMAL'}
+                  <span className={`font-mono font-bold ${lstmProb > 0.5 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                    {lstmProb > 0.5 ? 'DETECTED' : 'NORMAL'}
                   </span>
                 </div>
               </div>
@@ -363,18 +235,18 @@ export const ModelPipelineView: React.FC = () => {
                 6.5 Unified Risk Scoring Fusion
               </h3>
               <span className={`text-xs font-bold px-2.5 py-0.5 rounded font-mono border ${
-                riskResult.level === 'CRITICAL' ? 'bg-rose-50 text-rose-800 border-rose-200' :
-                riskResult.level === 'HIGH' ? 'bg-amber-50 text-amber-800 border-amber-200' :
-                riskResult.level === 'MODERATE' ? 'bg-yellow-50 text-yellow-800 border-yellow-200' :
+                riskScore >= 0.8 ? 'bg-rose-50 text-rose-800 border-rose-200' :
+                riskScore >= 0.6 ? 'bg-amber-50 text-amber-800 border-amber-200' :
+                riskScore >= 0.35 ? 'bg-yellow-50 text-yellow-800 border-yellow-200' :
                 'bg-emerald-50 text-emerald-800 border-emerald-200'
               }`}>
-                {riskResult.level} RISK
+                {riskScore >= 0.8 ? 'CRITICAL' : riskScore >= 0.6 ? 'HIGH' : riskScore >= 0.35 ? 'MODERATE' : 'LOW'} RISK
               </span>
             </div>
 
             {/* Formula display from synopsis */}
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs font-mono text-slate-700 mb-4 leading-relaxed">
-              <span className="text-slate-900 font-bold">Risk</span> = ({riskResult.weights.mlWeight} × <span className="text-slate-900 font-semibold">P_ML ({rfResult.attackProbability.toFixed(2)})</span>) + ({riskResult.weights.dlWeight} × <span className="text-slate-900 font-semibold">P_DL ({lstmResult.temporalAnomalyScore.toFixed(2)})</span>) + <span className="text-slate-600">Heuristic ({riskResult.weights.heuristicBoost.toFixed(2)})</span> = <strong className="text-slate-900 text-sm">{(riskResult.finalScore * 100).toFixed(1)}% ({riskResult.finalScore.toFixed(2)})</strong>
+              <span className="text-slate-900 font-bold">Risk Score directly from python inference backend</span> = <strong className="text-slate-900 text-sm">{(riskScore * 100).toFixed(1)}% ({riskScore.toFixed(2)})</strong>
             </div>
 
             {/* Progress bar */}
@@ -382,12 +254,12 @@ export const ModelPipelineView: React.FC = () => {
               <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden p-0.5">
                 <div
                   className={`h-full rounded-full transition-all duration-300 ${
-                    riskResult.finalScore > 0.75 ? 'bg-rose-600' :
-                    riskResult.finalScore > 0.50 ? 'bg-amber-600' :
-                    riskResult.finalScore > 0.30 ? 'bg-yellow-500' :
+                    riskScore > 0.75 ? 'bg-rose-600' :
+                    riskScore > 0.50 ? 'bg-amber-600' :
+                    riskScore > 0.30 ? 'bg-yellow-500' :
                     'bg-slate-900'
                   }`}
-                  style={{ width: `${riskResult.finalScore * 100}%` }}
+                  style={{ width: `${riskScore * 100}%` }}
                 ></div>
               </div>
               <div className="flex justify-between text-[10px] text-slate-500">

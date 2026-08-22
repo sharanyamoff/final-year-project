@@ -13,27 +13,20 @@ import {
 } from 'lucide-react';
 import { dqnAgent } from '../services/rlAgent';
 import { controlModule } from '../services/controlModule';
-import { DQNState, ActionType } from '../types';
+import { DQNState, ActionType, ProcessedSecurityEvent } from '../types';
 
-export const RlDqnView: React.FC = () => {
+interface RlDqnViewProps {
+  events: ProcessedSecurityEvent[];
+}
+
+export const RlDqnView: React.FC<RlDqnViewProps> = ({ events }) => {
   const [stats, setStats] = useState(dqnAgent.getStats());
-  const [simRisk, setSimRisk] = useState<number>(0.85);
-  const [simShap, setSimShap] = useState<number>(0.35);
-  const [simVelocity, setSimVelocity] = useState<number>(0.75);
-  const [simHistory, setSimHistory] = useState<number>(3);
-  const [simBlocked, setSimBlocked] = useState<boolean>(false);
   const [trainingMessage, setTrainingMessage] = useState<string>('');
+  
+  const latestEvent = events.length > 0 ? events[0] : null;
+  const dqnData = latestEvent?.realPrediction?.dqn;
 
-  const testState: DQNState = {
-    riskScore: simRisk,
-    topShapImpact: simShap,
-    flowVelocity: simVelocity,
-    historicalIncidentCount: simHistory,
-    currentIpStatus: simBlocked ? 1.0 : 0.0
-  };
 
-  const qValues = dqnAgent.getQValues(testState);
-  const decision = dqnAgent.selectAction(testState);
 
   const handleTrainEpisodes = (count: number) => {
     let earned = 0;
@@ -142,77 +135,31 @@ export const RlDqnView: React.FC = () => {
 
           <div>
             <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-700">Latest Event IP</span>
+              <span className="font-mono text-slate-900 font-bold">{latestEvent?.sourceIp || 'N/A'}</span>
+            </div>
+          </div>
+          <div>
+            <div className="flex justify-between text-xs mb-1">
               <span className="text-slate-700">Unified Risk Score</span>
-              <span className="font-mono text-slate-900 font-bold">{(simRisk * 100).toFixed(0)}%</span>
+              <span className="font-mono text-slate-900 font-bold">
+                {latestEvent ? (latestEvent.realPrediction?.risk_score * 100).toFixed(0) + '%' : 'N/A'}
+              </span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={simRisk}
-              onChange={(e) => setSimRisk(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
           </div>
-
           <div>
             <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-700">Top SHAP Anomaly Impact</span>
-              <span className="font-mono text-slate-900 font-bold">+{simShap.toFixed(2)} φ</span>
+              <span className="text-slate-700">Top SHAP Feature</span>
+              <span className="font-mono text-slate-900 font-bold">
+                {latestEvent?.realPrediction?.shap?.features?.[0]?.feature || 'N/A'}
+              </span>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="0.5"
-              step="0.01"
-              value={simShap}
-              onChange={(e) => setSimShap(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
           </div>
-
-          <div>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-700">Flow Velocity (Normalized PPS)</span>
-              <span className="font-mono text-slate-900 font-bold">{simVelocity.toFixed(2)}</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={simVelocity}
-              onChange={(e) => setSimVelocity(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
-          </div>
-
-          <div>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-700">Historical IP Incidents</span>
-              <span className="font-mono text-slate-900 font-bold">{simHistory} incidents</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="10"
-              value={simHistory}
-              onChange={(e) => setSimHistory(Number(e.target.value))}
-              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-slate-900"
-            />
-          </div>
-
           <div className="flex items-center justify-between pt-2">
-            <span className="text-xs text-slate-700">Current IP Block Status</span>
-            <button
-              onClick={() => setSimBlocked(!simBlocked)}
-              className={`px-3 py-1 rounded text-xs font-mono transition border ${
-                simBlocked ? 'bg-rose-50 text-rose-800 border-rose-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-200'
-              }`}
-            >
-              {simBlocked ? 'QUARANTINED' : 'NORMAL'}
-            </button>
+            <span className="text-xs text-slate-700">Current Action Executed</span>
+            <span className="px-3 py-1 rounded text-xs font-mono transition border bg-slate-50 text-slate-700 border-slate-200">
+              {latestEvent?.actionExecuted || 'N/A'}
+            </span>
           </div>
         </div>
 
@@ -230,42 +177,42 @@ export const RlDqnView: React.FC = () => {
             <div className="grid grid-cols-3 gap-4">
               {/* Action 0: ALLOW */}
               <div className={`p-4 rounded-xl border transition ${
-                decision.action === 'ALLOW' 
+                dqnData?.action === 'ALLOW' 
                   ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20' 
                   : 'bg-slate-50 border-slate-200 opacity-60'
               }`}>
                 <span className="text-xs font-mono text-slate-500 block">Action 0</span>
                 <span className="text-base font-bold text-emerald-800">ALLOW (Forward)</span>
                 <div className="text-2xl font-mono font-bold text-slate-900 mt-2">
-                  {qValues.allow.toFixed(2)}
+                  {dqnData?.q_values.ALLOW.toFixed(2) || '0.00'}
                 </div>
                 <span className="text-[10px] text-slate-500 block mt-1">Expected Q-Value</span>
               </div>
 
               {/* Action 1: ALERT */}
               <div className={`p-4 rounded-xl border transition ${
-                decision.action === 'ALERT' 
+                dqnData?.action === 'ALERT' 
                   ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-500/20' 
                   : 'bg-slate-50 border-slate-200 opacity-60'
               }`}>
                 <span className="text-xs font-mono text-slate-500 block">Action 1</span>
                 <span className="text-base font-bold text-amber-800">ALERT (SOC Notify)</span>
                 <div className="text-2xl font-mono font-bold text-slate-900 mt-2">
-                  {qValues.alert.toFixed(2)}
+                  {dqnData?.q_values.ALERT.toFixed(2) || '0.00'}
                 </div>
                 <span className="text-[10px] text-slate-500 block mt-1">Expected Q-Value</span>
               </div>
 
               {/* Action 2: BLOCK */}
               <div className={`p-4 rounded-xl border transition ${
-                decision.action === 'BLOCK' 
+                dqnData?.action === 'BLOCK' 
                   ? 'bg-rose-50 border-rose-500 ring-2 ring-rose-500/20' 
                   : 'bg-slate-50 border-slate-200 opacity-60'
               }`}>
                 <span className="text-xs font-mono text-slate-500 block">Action 2</span>
                 <span className="text-base font-bold text-rose-800">BLOCK (Firewall Drop)</span>
                 <div className="text-2xl font-mono font-bold text-slate-900 mt-2">
-                  {qValues.block.toFixed(2)}
+                  {dqnData?.q_values.BLOCK.toFixed(2) || '0.00'}
                 </div>
                 <span className="text-[10px] text-slate-500 block mt-1">Expected Q-Value</span>
               </div>
@@ -274,7 +221,7 @@ export const RlDqnView: React.FC = () => {
             {/* Decision Rationale */}
             <div className="mt-4 p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
               <span className="font-semibold text-slate-900 block mb-1">Autonomous Policy Decision:</span>
-              <p className="text-slate-700 leading-relaxed">{decision.decisionReason}</p>
+              <p className="text-slate-700 leading-relaxed">Agent has selected to {dqnData?.action} based on python backend predictions.</p>
             </div>
           </div>
 
