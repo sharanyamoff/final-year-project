@@ -11,7 +11,7 @@ const pool = new Pool({
   port: parseInt(process.env.PGPORT || '5432'),
   database: process.env.PGDATABASE || 'xrl_idars',
   user: process.env.PGUSER || 'postgres',
-  password: process.env.PGPASSWORD || '',
+  password: process.env.PGPASSWORD || undefined,
 });
 
 export async function initializeDatabase() {
