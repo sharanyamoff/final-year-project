@@ -139,6 +139,33 @@ def prediction_worker():
 
             write_telemetry()
 
+            # Async persistence to PostgreSQL via Node backend
+            event = {
+                "id": "evt_" + str(uuid.uuid4())[:8],
+                "timestamp": int(time.time() * 1000),
+                "sourceIp": job["flow_info"]["source_ip"],
+                "destinationIp": job["flow_info"]["destination_ip"],
+                "protocol": job["flow_info"]["protocol"],
+                "attackType": prediction_class,
+                "realPrediction": prediction,
+                "realFeatures": job["features"],
+                "actionExecuted": action,
+                "isBlocked": action == "BLOCK",
+                "alertDispatched": action == "ALERT"
+            }
+
+            try:
+                requests.post(
+                    "http://127.0.0.1:3000/api/db/events",
+                    json=event,
+                    timeout=2
+                )
+            except Exception as e:
+                print(json.dumps({
+                    "type": "postgres_write_error",
+                    "error": str(e)
+                }), flush=True)
+
             print(json.dumps({
                 "type": "prediction",
                 "flow": job["flow_info"],
