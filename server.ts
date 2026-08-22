@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import os from 'os';
 import { initializeDatabase, checkDatabaseHealth, saveSecurityEventToDb } from './src/services/postgres.js';
+import { initializeInfluxDB, saveTelemetry } from './src/services/influxdb.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -134,6 +135,16 @@ async function startServer() {
     } catch (err) {
       // Don't crash on DB error, just log it. The frontend handles errors gracefully.
       res.status(500).json({ status: 'error', error: 'Failed to save event' });
+    }
+  });
+
+  app.post('/api/telemetry', async (req, res) => {
+    try {
+      await saveTelemetry(req.body);
+      res.status(201).json({ status: 'success' });
+    } catch (err) {
+      console.error('[InfluxDB] Failed to save telemetry from API:', err);
+      res.status(500).json({ status: 'error', error: 'Failed to save telemetry' });
     }
   });
 
@@ -299,5 +310,7 @@ async function startServer() {
 
 // Initialize PostgreSQL Schema and Start Server
 initializeDatabase().then(() => {
+  return initializeInfluxDB();
+}).then(() => {
   startServer();
 });

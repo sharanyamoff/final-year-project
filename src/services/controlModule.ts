@@ -6,7 +6,6 @@
  * -> [Database (PostgreSQL & InfluxDB Storage)]
  */
 
-import { saveTelemetry } from './influxdb';
 import {
   ActionType,
   AttackType,
@@ -118,16 +117,20 @@ export class ProcessingControlModule {
 
     this.recordTimeSeriesTelemetry(event);
 
-    // Persist real-time telemetry to InfluxDB
+    // Persist real-time telemetry to InfluxDB via Backend API
     const latestTelemetry = this.timeSeriesData[this.timeSeriesData.length - 1];
 
     if (latestTelemetry) {
-      saveTelemetry({
-        packetsPerSec: latestTelemetry.packetsPerSec,
-        riskScore: latestTelemetry.riskScore,
-        attacksCount: latestTelemetry.attacksCount,
-        blockedCount: latestTelemetry.blockedCount,
-        normalCount: latestTelemetry.normalCount,
+      fetch('/api/telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packetsPerSec: latestTelemetry.packetsPerSec,
+          riskScore: latestTelemetry.riskScore,
+          attacksCount: latestTelemetry.attacksCount,
+          blockedCount: latestTelemetry.blockedCount,
+          normalCount: latestTelemetry.normalCount,
+        })
       }).catch(err => {
         console.error('[InfluxDB] Failed to save telemetry:', err);
       });
