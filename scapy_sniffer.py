@@ -118,13 +118,7 @@ def update_flow(packet):
             flow["fin_count"] += 1
 
     # Keep temporal information for LSTM
-    flow["sequence"].append({
-        "packet_size": float(size),
-        "syn": float(syn),
-        "ack": float(ack),
-        "rst": float(rst),
-        "fin": float(fin)
-    })
+    flow["sequence"].append(build_features(flow))
 
     # Keep last 5 observations
     flow["sequence"] = flow["sequence"][-5:]
@@ -185,12 +179,12 @@ def build_sequence(flow):
     repeat the current feature vector.
     """
 
-    features = build_features(flow)
+    sequence = list(flow["sequence"])
 
-    sequence = []
-
-    for _ in range(5):
-        sequence.append(dict(features))
+    if len(sequence) < 5:
+        pad_size = 5 - len(sequence)
+        zero_pad = {k: 0.0 for k in sequence[0].keys()}
+        sequence = [zero_pad] * pad_size + sequence
 
     return sequence
 
