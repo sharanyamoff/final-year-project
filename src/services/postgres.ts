@@ -6,13 +6,18 @@ dotenv.config();
 
 const { Pool } = pg;
 
-const pool = new Pool({
+const dbConfig: pg.PoolConfig = {
   host: process.env.PGHOST || '127.0.0.1',
   port: parseInt(process.env.PGPORT || '5432'),
   database: process.env.PGDATABASE || 'xrl_idars',
   user: process.env.PGUSER || 'postgres',
-  password: process.env.PGPASSWORD || undefined,
-});
+};
+
+if (process.env.PGPASSWORD) {
+  dbConfig.password = process.env.PGPASSWORD;
+}
+
+const pool = new Pool(dbConfig);
 
 export async function initializeDatabase() {
   try {
